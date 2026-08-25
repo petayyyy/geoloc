@@ -1,0 +1,37 @@
+# Request a basemap window around a prior position, served by geoloc_map.
+#
+# ARCHITECTURAL NOTE (ADR-005): the prior window derived from the fusion
+# covariance replaces a retrieval network. Radius is
+#   R = 3 * sqrt(sigma_e^2 + sigma_n^2) + margin
+# Matching happens only inside it. This removes the main reason the literature
+# introduces VPR and saves an order of magnitude of compute.
+#
+# Map-window descriptors are cached ON BOARD, not precomputed offline.
+# The cache is invalidated when the window centre shifts by >30% of the window
+# size, when the requested GSD changes, OR when the matcher model version
+# changes -- the last one is easy to forget and produces a silent
+# incompatibility after a model update.
+
+float64 center_east
+float64 center_north
+float64 radius_m
+float64 gsd
+bool    with_descriptors
+string  model_version            # for descriptor cache validation; ignored if
+                                 # with_descriptors is false
+---
+sensor_msgs/Image image          # mono8
+sensor_msgs/Image validity       # mono8: 0 where the mosaic has holes or seams
+float64 origin_east
+float64 origin_north
+float64 gsd
+
+bool    success
+string  message                  # reason on failure; a request outside the mission
+                                 # package is a NORMAL situation (aircraft left the
+                                 # planned route), not an exception
+
+# Descriptors, populated only when requested and the cache is valid
+uint32    n_keypoints
+float32[] keypoints_xy           # 2*N, in window pixel coordinates
+int8[]    descriptors            # N*64, int8

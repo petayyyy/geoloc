@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>geoloc_common</name>
+  <version>0.1.0</version>
+  <description>
+    Header-only geometry and estimation primitives shared by every geoloc node:
+    WGS84/ENU conversion, SE(2), geo-referenced rasters, covariance validation.
+
+    Having ONE implementation of each is deliberate. A half-pixel convention
+    mismatch or a divergent angle normalisation between two nodes produces a
+    constant offset that looks exactly like matcher bias and is very hard to
+    attribute.
+  </description>
+  <maintainer email="dev@example.invalid">geoloc team</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>eigen</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

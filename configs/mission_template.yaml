@@ -1,0 +1,213 @@
+# Mission configuration template.
+#
+# Every threshold in this file is CONFIGURATION, not a constant in code
+# (plan/prompts/P0-common.md rule 6). They will change after every field trial,
+# and a threshold buried in code is a threshold nobody finds on the flight line.
+#
+# Values below are the STARTING points from plan/01-requirements.md and
+# plan/testing/05-metrics.md. They are calibrated on the `adversarial` set
+# (T22), not on clean data -- on clean data any thresholds look fine.
+
+mission:
+  id: "corridor-template"
+  geopack_path: "/data/missions/corridor-template.geopack"
+
+  # ENU anchor. A MISSION PARAMETER, never a code constant.
+  origin:
+    lat_deg: 0.0
+    lon_deg: 0.0
+    alt_m: 0.0
+
+  profile:
+    agl_min_m: 100.0        # below this the patch gets too small at 0.5 m/px
+    agl_max_m: 150.0
+    speed_max_mps: 15.0
+    route_length_max_m: 10000.0
+
+# ---------------------------------------------------------------------------
+sensors:
+  camera:
+    topic: "/camera/image_raw"
+    hfov_deg: 90.0
+    global_shutter: true    # mandatory: rolling shutter at 15 m/s skews SE(2)
+  lidar:
+    topic: "/livox/lidar"
+    # Livox Avia. NOTE: this FOV is NARROWER than the camera frame -- at 100 m
+    # AGL the cloud covers ~141 x 155 m vs the frame's 200 x 150 m. Roughly 30%
+    # of patch width has no lidar coverage. That is a hardware property, not a
+    # bug to widen away.
+    fov_h_deg: 70.4
+    fov_v_deg: 77.2
+    range_max_m: 190.0
+  calibration_file: "/data/calib/current.yaml"
+  calibration_max_age_days: 30   # pre-flight check refuses a stale calibration
+
+# ---------------------------------------------------------------------------
+ortho:                      # T14, T15
+  patch_gsd_m: 0.5          # matched to basemap GSD; see 01-requirements.md section 3
+  dsm_gsd_m: 0.5
+  cloud_accumulation_s: 0.8 # 0.5-1.0; longer = better coverage, staler geometry
+  deskew_enabled: true      # NOT optional: 15 m/s x 1 s = 15 m of smear
+  dem_fill_enabled: true    # Copernicus fill outside lidar coverage
+  confidence:
+    lidar_dense_min_points_per_cell: 4
+    transition_width_cells: 6      # smooth blend; a step at the lidar/DEM border
+                                   # becomes a stable false feature the matcher
+                                   # will find and lean on
+  target_latency_ms: 15
+
+# ---------------------------------------------------------------------------
+map:                        # T07
+  descriptor_cache:
+    invalidate_on_shift_fraction: 0.30
+    invalidate_on_model_change: true   # easy to forget; produces a silent
+                                       # incompatibility after a model update
+  prefetch_enabled: true
+  prefetch_lookahead_s: 5.0
+  max_memory_mb: 200
+
+# ---------------------------------------------------------------------------
+matcher:                    # T17-T20
+  primary_channel: "xfeat"
+  model_path: "/data/models/xfeat_star_int8.rknn"
+  model_version: "xfeat_star_v1"
+  backend: "rknn"           # rknn | cpu_onnx  (plan B, see ADR-001)
+  npu_core: 0
+
+  # ADR-002: 3 DoF only. Scale is observable from AGL + DSM, and estimating it
+  # on a near-planar scene is degenerate.
+  estimate_scale: false
+  scale_check_tolerance: 0.10    # diagnostic only; disagreement flags a bad match
+
+  ransac:
+    method: "magsac"
+    max_iterations: 1000
+    threshold_px: 2.0
+
+  adhop:                    # T18
+    mode: "conditional"     # always | conditional | off
+    trigger_inliers_range: [15, 40]
+    trigger_covisibility_range: [0.15, 0.30]
+
+  fallback:
+    phase_correlation_enabled: true    # T19
+    semantic_enabled: false            # T20, enable after mIoU >= 0.55
+    switch_after_failed_frames: 2
+
+# ---------------------------------------------------------------------------
+integrity:                  # T22 -- the system's main safety interlock
+  # Target: IFR < 0.5% (accepted fixes with >50 m error). ADR-006 makes this
+  # the top-priority metric: it outranks accuracy. Resolve ties toward refusing.
+  #
+  # But a monitor that rejects everything also fails (IFR = 0, useless), so
+  # T22-A-04 requires urban acceptance_rate >= 60%.
+  gates:
+    min_inliers: 30
+    min_inlier_ratio: 0.25
+    min_covisibility: 0.20        # OrthoLoC: below this, error rises sharply
+    min_peak_ratio: 1.30          # THE defence against periodic structures
+    max_residual_rms_px: 2.0
+    min_spatial_spread: 0.40
+    min_mean_confidence: 0.50
+    chi2_threshold: 11.34         # 3 DoF, 99%
+
+  # Fallback channels get tightened gates and capped fix_type.
+  channel_overrides:
+    phase_correlation:
+      min_peak_ratio: 1.60
+      max_fix_type: 3
+    semantic:
+      max_fix_type: 2             # NEVER 3, under any condition
+
+  consistency:
+    window_size: 5
+    max_disagreement_m: 25.0
+    # Strict mode for INIT / LOST / long COASTING: require 3 consecutive
+    # agreeing fixes. This lowers fix rate; compensate by widening the window.
+    strict_mode_required_agreements: 3
+
+# ---------------------------------------------------------------------------
+covariance:                 # T21
+  sigma_pixel: 1.0
+  # THE most commonly forgotten term. Does NOT shrink with inlier count: the
+  # matcher cannot measure away the map's own georeferencing error.
+  # Value comes from T09 measurement -- do not guess it.
+  basemap_bias_sigma_m: 3.0
+  floor_position_m: 0.5
+  floor_yaw_deg: 0.05
+  covisibility_penalty_exponent: 2.0
+  spatial_spread_yaw_penalty: 3.0     # anisotropic: hits the angular component
+  peak_ratio_blowup_threshold: 1.5
+
+# ---------------------------------------------------------------------------
+fusion:                     # T23, T24
+  prior_window:
+    k_sigma: 3.0
+    margin_m: 20.0
+    radius_min_m: 30.0
+    radius_max_m: 1000.0
+    radius_init_m: 500.0    # cold start prior
+  odometry:
+    # NOT the covariance FAST-LIVO2 publishes -- that one is optimistic.
+    # Calibrate against MARS-LVIG by measuring how error actually grows.
+    drift_position_m_per_km: 1.4
+    drift_yaw_deg_per_km: 0.05
+  robust_loss: "huber"      # SECOND line of defence; T22 is the first
+  robust_delta: 2.0
+  isam2_relinearize_threshold: 0.1
+  max_graph_variables: 2000
+
+  modes:
+    converging_min_fixes: 5
+    nominal_max_sigma_yaw_deg: 1.0
+    coasting_after_s: 20.0
+    lost_after_s: 180.0
+    lost_max_sigma_position_m: 200.0
+    hysteresis_factor: 1.25   # without it the system chatters at the boundary,
+                              # flapping fix_type and upsetting EKF2
+
+# ---------------------------------------------------------------------------
+mavlink:                    # T25-T27
+  # ADR-003: GPS_INPUT, not VISION_POSITION_ESTIMATE (EKF2 divergence, see
+  # FAST-LIVO2 issue #126).
+  publish_rate_hz: 5.0
+  # Measured loop latency. Do NOT leave at default: 200 ms at 15 m/s is 3 m of
+  # speed-proportional systematic error.
+  loop_delay_ms: 0.0        # <- MEASURE IN T26 AND SET
+  eph_smoothing: false      # never smooth: a sharp rise entering COASTING is
+                            # the truth EKF2 must learn immediately
+  ignore_velocity_fields: true   # FAST-LIVO2 already supplies velocity
+  yaw_max_sigma_deg: 2.0    # above this, report yaw unavailable
+  satellites_base: 6
+
+  failsafe:
+    # The localization system makes NO flight decisions. It reports state and
+    # uncertainty; the autopilot and operator decide. T27-U-02 audits this.
+    allow_mode_commands: false      # MUST stay false
+    watchdog_timeout_s: 2.0
+    message_min_interval_s: 5.0
+
+# ---------------------------------------------------------------------------
+runtime:                    # T32, T33
+  fix_rate_hz: 2.0
+  affinity:
+    # Without explicit pinning the scheduler migrates threads across clusters,
+    # trashing cache and adding jitter.
+    fast_livo2_cores: [4, 5]      # A76
+    matcher_cores: [6]            # A76
+    io_cores: [0, 1, 2, 3]        # A55
+  warp_backend: "auto"            # auto | rga | opencl | cpu  (T31 decides)
+  thermal:
+    # Managed degradation beats uncontrolled throttling: a core that drops
+    # frequency on overheat degrades everything at once, unpredictably.
+    warn_temp_c: 75.0
+    degrade_temp_c: 78.0
+    degraded_fix_rate_hz: 1.0
+    critical_temp_c: 85.0
+
+logging:
+  rosbag_path: "/data/logs"
+  rosbag_max_gb: 200
+  debug_snapshots_enabled: true
+  debug_snapshots_max_per_minute: 6   # rate-limit or a 30-min run fills the disk
+  telemetry_parquet: true

@@ -1,0 +1,43 @@
+# Formatting and lint gates. Run: make lint
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-xml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=512"]   # datasets and map packages never enter git
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v18.1.5
+    hooks:
+      - id: clang-format
+        types_or: [c++, c]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.0
+    hooks:
+      - id: ruff
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      # Every TODO must name the task that will resolve it. An anonymous TODO
+      # in a 36-task project is an orphan nobody will claim.
+      - id: todo-needs-task-id
+        name: TODO must reference a task (e.g. TODO(T17))
+        entry: 'TODO(?!\((T[0-9]{2}[^)]*)\))'
+        language: pygrep
+        types_or: [c++, c, python]
+
+      # ADR-006: the localization system makes no flight decisions. This is a
+      # cheap tripwire for the rule T27-U-02 audits properly.
+      - id: no-flight-mode-commands
+        name: geoloc must not command flight modes
+        entry: '(set_mode|SetMode|COMMAND_LONG.*MAV_CMD_DO_SET_MODE)'
+        language: pygrep
+        types_or: [c++, c, python]
+        exclude: '^(sim/|tools/|src/geoloc_mavlink/test/)'

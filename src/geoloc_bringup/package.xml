@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>geoloc_bringup</name>
+  <version>0.1.0</version>
+  <description>Launch files and mission configuration for the geoloc stack.</description>
+  <maintainer email="dev@example.invalid">geoloc team</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>geoloc_map</exec_depend>
+  <exec_depend>geoloc_ortho</exec_depend>
+  <exec_depend>geoloc_matcher</exec_depend>
+  <exec_depend>geoloc_integrity</exec_depend>
+  <exec_depend>geoloc_fusion</exec_depend>
+  <exec_depend>geoloc_mavlink</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

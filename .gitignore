@@ -1,0 +1,17 @@
+build/
+install/
+log/
+__pycache__/
+*.pyc
+
+# Never in git: datasets, map packages, models, logs. They live on the NAS /
+# NVMe and are referenced by path from the mission config.
+data/
+*.geopack/
+*.bag
+*.db3
+*.rknn
+*.onnx
+*.pt
+runs/
+artifacts/
