@@ -16,6 +16,7 @@ What works right now:
 |---|---|
 | `geoloc_msgs` | **Complete** message contract — every message and service from `03-interfaces.md` |
 | `geoloc_common` | **Complete and tested** — geodetic, SE(2), raster, covariance. 160 051 checks, 0 failures |
+| `tools/mapprep` | **T05 done** — basemap downloader + COG mosaic builder; Maykop geopack from Esri + Bing, 34 level-0 tests green |
 | Six pipeline nodes | Skeletons that launch. Implementation lands with their tasks |
 | `configs/mission_template.yaml` | Every threshold from the plan, as configuration |
 
@@ -76,4 +77,4 @@ The ENU anchor is a mission parameter, never a code constant.
 
 ## Before starting work
 
-Read [`docs/plan/prompts/P0-common.md`](docs/plan/prompts/P0-common.md), then your role prompt, then your task card. Two ADRs are still open and block wave 0: [ADR-007](docs/plan/adr/ADR-007-ros-distro-os.md) (ROS distro / OS — blocks T01 finalisation) and [ADR-008](docs/plan/adr/ADR-008-basemap-providers.md) (basemap providers and licensing — blocks T05).
+Read [`docs/plan/prompts/P0-common.md`](docs/plan/prompts/P0-common.md), then your role prompt, then your task card. Two ADRs are still open and block wave 0: [ADR-007](docs/plan/adr/ADR-007-ros-distro-os.md) (ROS distro / OS — blocks T01 finalisation) and [ADR-008](docs/plan/adr/ADR-008-basemap-providers.md) (basemap providers and licensing). T05 shipped under the internal-development caveat from its execution prompt: provider terms are recorded in every manifest, and no commercial-use rights are claimed until ADR-008 is closed.

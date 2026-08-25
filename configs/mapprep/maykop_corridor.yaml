@@ -1,0 +1,58 @@
+# T05 build config: Maykop corridor (derived from the flight waypoint CSV).
+#
+# Every number here is CONFIGURATION, not a code constant (P0-common.md rule 6).
+# Licensing note (ADR-008 open): Esri / Bing / Yandex imagery is used for
+# internal development only. The manifest records the terms and claims no
+# commercial-use rights until ADR-008 is closed.
+
+mission_id: "maykop-corridor-2026-08"
+
+crs: "EPSG:32637"            # UTM zone 37N, mission zone
+
+# Corridor: Maykop, Adygea (~630 x 1440 m; lon 39.918-39.926, lat 44.822-44.835)
+bounds:
+  west: 39.918
+  south: 44.822
+  east: 39.926
+  north: 44.835
+
+# ENU anchor (mission parameter, never a code constant)
+origin:
+  lat: 44.8285
+  lon: 39.9220
+  alt: 80.0
+
+layers:
+  # Primary: 0.3 m/px -- flight AGL is 80 m, below the 100 m design floor; at
+  # 0.5 m/px the patch would be ~320x240 px.
+  - name: ortho_a
+    provider: esri_world_imagery
+    target_gsd_m: 0.3
+    max_zoom: 19
+    min_zoom: 17
+  # Secondary: 0.5 m/px, second provider for OrthoSim domain gap (T10) and
+  # field cross-checking.
+  - name: ortho_b
+    provider: bing_aerial
+    target_gsd_m: 0.5
+    max_zoom: 19
+    min_zoom: 17
+  # Optional third provider for cross-check. Disabled by default; enable after
+  # the Yandex tile terms are re-checked for this mission area.
+  # - name: ortho_c
+  #   provider: yandex_satellite
+  #   target_gsd_m: 0.5
+  #   max_zoom: 18
+  #   min_zoom: 16
+
+cache:
+  root: "~/.cache/geoloc/tiles"
+
+mosaic:
+  overviews: [2, 4, 8]       # coarse level ~4 m/px for cold start / LOST search
+  jpeg_quality: 85
+  seam_px: 2
+
+# Best-effort per-tile capture dates via the Esri World Imagery metadata
+# service. When unavailable the manifest records capture_date: null honestly.
+enrich_capture_dates: true

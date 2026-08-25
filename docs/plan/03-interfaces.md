@@ -173,6 +173,8 @@ int8[]    descriptors           # N*64, int8
   manifest.yaml          # версия, CRS, границы, провайдеры, даты съёмки, оценка bias
   ortho_a.tif            # COG, основная подложка, EPSG:4326 или UTM
   ortho_b.tif            # COG, второй провайдер (для OrthoSim и кросс-проверки)
+  validity_a.tif         # COG, маска валидности слоя (uint8: 255 = данные, 0 = дыра/шов)
+  validity_b.tif
   dem.tif                # Copernicus GLO-30, ресемплированный
   semantic.tif           # растр OSM-классов, uint8, 1 м/px
   descriptors/           # опционально: предвычисленные дескрипторы по сетке
@@ -195,6 +197,21 @@ layers:
   semantic:{source: "osm", extract_date: "2026-08-01", gsd: 1.0,
             classes: [background, road, building, water, farmland, forest]}
 ```
+
+Опциональные поля слоя (расширение T05, задокументировано в
+`tools/mapprep/mapprep/schema/manifest.schema.json`): `validity_file`,
+`license`, `attribution`, `native_gsd`, `source_zoom`, `tiles` (ожидаемое/
+загруженное/отсутствующее число тайлов), `bounds_wgs84`, `notes`.
+
+Правила заполнения (T05):
+
+- `capture_date` может быть `null` — если провайдер не публикует даты съёмки,
+  так и записывается, дата **никогда не угадывается**;
+- `georef_bias` до T09 — плейсхолдер `{east: null, north: null, sigma: null}`;
+- `license` записывает условия провайдера, но **никаких прав коммерческого
+  использования** манифест не заявляет, пока открыт ADR-008;
+- `gsd` — честное разрешение мозаики; апсемплинг запрещён (источник грубее
+  цели → мозаика на нативном GSD, поле `native_gsd` это фиксирует).
 
 ---
 

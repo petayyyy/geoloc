@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://geoloc.local/schemas/manifest.schema.json",
+  "title": "geopack manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "mission_id", "crs", "bounds", "origin", "layers"],
+  "properties": {
+    "version": {"const": 1},
+    "mission_id": {"type": "string", "minLength": 1},
+    "crs": {"type": "string", "pattern": "^EPSG:[0-9]+$"},
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["east_min", "east_max", "north_min", "north_max"],
+      "properties": {
+        "east_min": {"type": "number"},
+        "east_max": {"type": "number"},
+        "north_min": {"type": "number"},
+        "north_max": {"type": "number"}
+      }
+    },
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lat", "lon", "alt"],
+      "properties": {
+        "lat": {"type": "number"},
+        "lon": {"type": "number"},
+        "alt": {"type": "number"}
+      }
+    },
+    "layers": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/layer"},
+      "propertyNames": {"pattern": "^(ortho_[a-z]|dem|semantic)$"}
+    }
+  },
+  "$defs": {
+    "layer": {
+      "type": "object",
+      "required": ["file", "provider", "gsd", "georef_bias"],
+      "properties": {
+        "file": {"type": "string", "minLength": 1},
+        "validity_file": {"type": "string", "minLength": 1},
+        "provider": {"type": "string", "minLength": 1},
+        "capture_date": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "gsd": {"type": "number", "exclusiveMinimum": 0},
+        "native_gsd": {"type": "number", "exclusiveMinimum": 0},
+        "source_zoom": {"type": "integer", "minimum": 0},
+        "crs": {"type": "string", "pattern": "^EPSG:[0-9]+$"},
+        "tiles": {
+          "type": "object",
+          "properties": {
+            "expected": {"type": "integer", "minimum": 0},
+            "fetched": {"type": "integer", "minimum": 0},
+            "missing": {"type": "integer", "minimum": 0}
+          }
+        },
+        "bounds_wgs84": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["west", "south", "east", "north"],
+          "properties": {
+            "west": {"type": "number"},
+            "south": {"type": "number"},
+            "east": {"type": "number"},
+            "north": {"type": "number"}
+          }
+        },
+        "georef_bias": {
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["east", "north", "sigma"],
+              "properties": {
+                "east": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+                "north": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+                "sigma": {"anyOf": [{"type": "number"}, {"type": "null"}]}
+              }
+            }
+          ]
+        },
+        "license": {"type": "string"},
+        "attribution": {"type": "string"},
+        "notes": {"type": "string"},
+        "upsampling_refused": {"type": "boolean"}
+      }
+    }
+  }
+}
