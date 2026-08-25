@@ -37,7 +37,9 @@ class GcpResult:
 def verify_geotransform(manifest: dict, geopack_dir: Path) -> list[str]:
     problems = []
     bounds = manifest["bounds"]
-    for layer in manifest["layers"].values():
+    for layer_name, layer in manifest["layers"].items():
+        if not layer_name.startswith("ortho_"):
+            continue
         if not layer.get("file", "").endswith(".tif"):
             continue
         path = geopack_dir / layer["file"]

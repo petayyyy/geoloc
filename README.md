@@ -16,7 +16,7 @@ What works right now:
 |---|---|
 | `geoloc_msgs` | **Complete** message contract — every message and service from `03-interfaces.md` |
 | `geoloc_common` | **Complete and tested** — geodetic, SE(2), raster, covariance. 160 051 checks, 0 failures |
-| `tools/mapprep` | **T05 done** — basemap downloader + COG mosaic builder; Maykop geopack from Esri + Bing, 34 level-0 tests green |
+| `tools/mapprep` | **T05 + T06 done** — basemap downloader + COG mosaic builder, Copernicus GLO-30 DEM (EGM2008→ellipsoid) + OSM semantic raster, package validator and terrain classifier; Maykop geopack from Esri + Bing, 60 level-0 tests green |
 | Six pipeline nodes | Skeletons that launch. Implementation lands with their tasks |
 | `configs/mission_template.yaml` | Every threshold from the plan, as configuration |
 

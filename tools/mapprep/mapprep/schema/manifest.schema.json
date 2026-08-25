@@ -39,16 +39,32 @@
   "$defs": {
     "layer": {
       "type": "object",
-      "required": ["file", "provider", "gsd", "georef_bias"],
+      "required": ["file", "gsd"],
+      "additionalProperties": false,
       "properties": {
         "file": {"type": "string", "minLength": 1},
         "validity_file": {"type": "string", "minLength": 1},
         "provider": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
         "capture_date": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "extract_date": {"anyOf": [{"type": "string"}, {"type": "null"}]},
         "gsd": {"type": "number", "exclusiveMinimum": 0},
         "native_gsd": {"type": "number", "exclusiveMinimum": 0},
         "source_zoom": {"type": "integer", "minimum": 0},
         "crs": {"type": "string", "pattern": "^EPSG:[0-9]+$"},
+        "vertical_datum": {"type": "string", "minLength": 1},
+        "source_datum": {"type": "string", "minLength": 1},
+        "geoid_model": {"type": "string", "minLength": 1},
+        "source_tile": {"type": "string", "minLength": 1},
+        "source_tiles": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "classes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "resampling": {"type": "string", "minLength": 1},
         "tiles": {
           "type": "object",
           "properties": {

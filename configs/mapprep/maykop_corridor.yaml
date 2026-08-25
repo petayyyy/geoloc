@@ -53,6 +53,24 @@ mosaic:
   jpeg_quality: 85
   seam_px: 2
 
+# Copernicus GLO-30 DEM (T06): filler where the Livox FOV does not cover the
+# camera frame (~30% of patch width). 1-arcsec source (~30 m), interpolated onto
+# the requested grid; native_gsd is recorded honestly in the manifest.
+dem:
+  source: copernicus_glo30
+  target_gsd_m: 10
+  geoid_model: egm2008       # EGM2008 grid from the PROJ CDN, cached on disk
+  cache_dir: "~/.cache/geoloc/dem"
+  geoid_cache_dir: "~/.cache/geoloc/geoid"
+
+# OSM semantic raster (T06): reference layer for fallback channel 2 (T20) and
+# the terrain classifier that all metrics are broken down by.
+semantic:
+  source: osm
+  gsd: 1.0
+  road_half_width_m: 3.0
+  water_line_half_width_m: 2.0
+
 # Best-effort per-tile capture dates via the Esri World Imagery metadata
 # service. When unavailable the manifest records capture_date: null honestly.
 enrich_capture_dates: true

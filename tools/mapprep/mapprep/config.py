@@ -15,6 +15,8 @@ _REQUIRED_TOP = {"mission_id", "crs", "bounds", "origin", "layers"}
 _REQUIRED_BOUNDS = {"west", "south", "east", "north"}
 _REQUIRED_ORIGIN = {"lat", "lon", "alt"}
 _REQUIRED_LAYER = {"name", "provider", "target_gsd_m"}
+_REQUIRED_DEM = {"target_gsd_m"}
+_REQUIRED_SEMANTIC = {"gsd"}
 
 
 class ConfigError(Exception):
@@ -52,6 +54,18 @@ def _validate(config: dict[str, Any]) -> None:
             raise ConfigError("layer name must start with 'ortho_'")
     if len({layer["name"] for layer in config["layers"]}) != len(config["layers"]):
         raise ConfigError("duplicate layer names")
+    if "dem" in config:
+        missing = _REQUIRED_DEM - set(config["dem"])
+        if missing:
+            raise ConfigError(f"dem missing keys: {sorted(missing)}")
+        if config["dem"]["target_gsd_m"] <= 0:
+            raise ConfigError("dem.target_gsd_m must be > 0")
+    if "semantic" in config:
+        missing = _REQUIRED_SEMANTIC - set(config["semantic"])
+        if missing:
+            raise ConfigError(f"semantic missing keys: {sorted(missing)}")
+        if config["semantic"]["gsd"] <= 0:
+            raise ConfigError("semantic.gsd must be > 0")
 
 
 def cache_root(config: dict[str, Any]) -> Path:

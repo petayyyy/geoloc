@@ -7,13 +7,25 @@ import sys
 from pathlib import Path
 
 from . import dates as dates_mod
+from .classifier import class_fractions, classify
 from .config import cache_root as config_cache_root
 from .config import load_config, overviews
+from .dem import build_dem, fetch_dem_tiles
 from .fetch import force_ipv4
-from .manifest import add_ortho_layer, new_manifest, read_manifest, write_manifest
+from .geoid import GridGeoid, resolve_egm2008_grid
+from .manifest import (
+    add_dem_layer,
+    add_ortho_layer,
+    add_semantic_layer,
+    new_manifest,
+    read_manifest,
+    write_manifest,
+)
 from .mosaic import build_layer, select_zoom
 from .providers import get_provider
+from .semantic import build_semantic
 from .tilecache import import_cache
+from .validator import validate_package
 from .verify import (
     check_pyramid,
     cross_provider_offset,
@@ -93,9 +105,63 @@ def _build(args: argparse.Namespace) -> int:
             )
 
     manifest["bounds"] = _manifest_bounds(manifest, geopack_dir)
+
+    if "dem" in config:
+        dem_cfg = config["dem"]
+        geoid_cache = _optional_path(config, ["dem", "geoid_cache_dir"])
+        geoid_path = resolve_egm2008_grid(geoid_cache, offline=args.offline)
+        geoid = GridGeoid(geoid_path)
+        source_paths = fetch_dem_tiles(
+            bounds_wgs84,
+            _optional_path(config, ["dem", "cache_dir"]),
+            offline=args.offline,
+        )
+        print(
+            f"[dem] {len(source_paths)} GLO-30 tile(s), geoid {geoid_path.name}, "
+            f"target gsd {dem_cfg['target_gsd_m']} m/px"
+        )
+        dem_result = build_dem(
+            bounds_wgs84,
+            dem_cfg["target_gsd_m"],
+            source_paths,
+            geopack_dir / "dem.tif",
+            config["crs"],
+            geoid=geoid,
+            overviews=overviews(config),
+        )
+        print(
+            f"[dem] grid {dem_result.grid.width}x{dem_result.grid.height} "
+            f"@ {dem_result.target_gsd_m} m/px; native ~{dem_result.native_gsd_m} m; "
+            f"coverage {dem_result.valid_ratio:.1%}"
+        )
+        add_dem_layer(manifest, dem_result, config["crs"], bounds_wgs84=bounds_wgs84)
+
+    if "semantic" in config:
+        sem_cfg = config["semantic"]
+        print(f"[semantic] OSM rasterization @ {sem_cfg['gsd']} m/px")
+        sem_result = build_semantic(
+            bounds_wgs84,
+            sem_cfg["gsd"],
+            geopack_dir / "semantic.tif",
+            config["crs"],
+            offline=args.offline,
+            extract_date=sem_cfg.get("extract_date"),
+            road_half_width_m=sem_cfg.get("road_half_width_m", 3.0),
+            water_line_half_width_m=sem_cfg.get("water_line_half_width_m", 2.0),
+            overviews=overviews(config),
+        )
+        print(
+            f"[semantic] grid {sem_result.grid.width}x{sem_result.grid.height} "
+            f"@ {sem_result.gsd_m} m/px"
+        )
+        add_semantic_layer(
+            manifest, sem_result, config["crs"], extract_date=sem_result.extract_date
+        )
+
     write_manifest(manifest, geopack_dir / "manifest.yaml")
 
     problems = verify_geotransform(manifest, geopack_dir)
+    problems += validate_package(manifest, geopack_dir)
     for problem in problems:
         print(f"VERIFY FAIL: {problem}")
     if problems:
@@ -125,6 +191,15 @@ def _load_cloud_polygons(layer_cfg: dict, config_dir: Path):
     from .mask import load_geojson_polygons
 
     return load_geojson_polygons(config_dir / path)
+
+
+def _optional_path(config: dict, keys: list[str]) -> Path | None:
+    node = config
+    for key in keys:
+        node = node.get(key) if isinstance(node, dict) else None
+        if node is None:
+            return None
+    return Path(node).expanduser() if isinstance(node, str) else None
 
 
 def _manifest_bounds(manifest: dict, geopack_dir: Path) -> dict:
@@ -163,6 +238,7 @@ def _verify(args: argparse.Namespace) -> int:
     geopack_dir = Path(args.geopack)
     manifest = read_manifest(geopack_dir / "manifest.yaml")
     problems = verify_geotransform(manifest, geopack_dir)
+    problems += validate_package(manifest, geopack_dir)
     for problem in problems:
         print(f"FAIL: {problem}")
     for layer_name, layer in manifest["layers"].items():
@@ -197,15 +273,47 @@ def _inspect(args: argparse.Namespace) -> int:
     for key in ("mission_id", "crs", "bounds", "origin"):
         print(f"{key}: {manifest[key]}")
     for name, layer in manifest["layers"].items():
-        print(
-            f"{name}: {layer.get('provider')} gsd={layer.get('gsd')} "
-            f"date={layer.get('capture_date')} file={layer.get('file')}"
-        )
+        src = layer.get("provider") or layer.get("source")
+        date = layer.get("capture_date") or layer.get("extract_date")
+        print(f"{name}: {src} gsd={layer.get('gsd')} date={date} file={layer.get('file')}")
+    return 0
+
+
+def _validate(args: argparse.Namespace) -> int:
+    manifest = read_manifest(Path(args.geopack) / "manifest.yaml")
+    problems = validate_package(manifest, Path(args.geopack))
+    for problem in problems:
+        print(f"FAIL: {problem}")
+    if problems:
+        return 1
+    print("geopack consistent: CRS, bounds and resolutions agree across all layers")
+    return 0
+
+
+def _classify(args: argparse.Namespace) -> int:
+    import rasterio
+
+    if args.raster:
+        path = Path(args.raster)
+    else:
+        manifest = read_manifest(Path(args.geopack) / "manifest.yaml")
+        layer = manifest["layers"].get("semantic")
+        if layer is None:
+            print("no semantic layer in manifest")
+            return 1
+        path = Path(args.geopack) / layer["file"]
+    with rasterio.open(path) as ds:
+        semantic = ds.read(1)
+    terrain = classify(semantic)
+    fractions = class_fractions(semantic)
+    print(f"terrain class: {terrain}")
+    for class_id, fraction in sorted(fractions.items()):
+        print(f"  class {class_id}: {fraction:.3%}")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mapprep", description="geoloc T05 basemap tooling")
+    parser = argparse.ArgumentParser(prog="mapprep", description="geoloc basemap tooling (T05/T06)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_build = sub.add_parser("build", help="assemble a geopack for a corridor")
@@ -226,6 +334,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("--geopack", required=True)
     p_verify.add_argument("--cross", action="store_true", help="cross-provider NCC shift")
     p_verify.set_defaults(func=_verify)
+
+    p_validate = sub.add_parser("validate", help="cross-layer consistency check (T06-U-03)")
+    p_validate.add_argument("--geopack", required=True)
+    p_validate.set_defaults(func=_validate)
+
+    p_classify = sub.add_parser("classify", help="terrain class of the semantic layer (T06-U-04)")
+    p_classify.add_argument("--geopack", help="geopack with a semantic layer")
+    p_classify.add_argument("--raster", help="or a semantic raster file directly")
+    p_classify.set_defaults(func=_classify)
 
     p_inspect = sub.add_parser("inspect", help="print the manifest")
     p_inspect.add_argument("--geopack", required=True)
