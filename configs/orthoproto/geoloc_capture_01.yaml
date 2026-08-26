@@ -34,6 +34,15 @@ camera: # camera_MARS_LVIG_AM.yaml @ scale 0.25 (the /rgb_img VIO image size)
   d1: 0.1168
   d2: 0.0015
   d3: 0.00013
+  # Rcl (extrin_calib in MARS_LVIG_AMtown.yaml): fixed rotation from the
+  # lidar/IMU body frame (what odometry orientation is expressed in) to the
+  # camera's own optical frame. Far from identity on this rig -- omitting it
+  # pointed every rendered ray bundle in the wrong direction (see
+  # run_ortho's R_lidar_to_cam docstring).
+  Rcl:
+    - [-0.0022464, -0.9997299, -0.0231319]
+    - [-0.0084211,  0.0231501, -0.9996966]
+    - [ 0.9999620, -0.0020509, -0.0084708]
 
 dsm: # T14
   dsm_gsd_m: 0.5
@@ -50,6 +59,12 @@ ortho: # T15
   patch_radius_m: 130.0
   ray_steps: 48
   agl_floor_m: 30.0
+  # Real flight AGL is ~80 m (AMtown.kml). FAST-LIVO2 odometry Z drifts
+  # heavily through this capture's 180-degree turn (up to 387 m computed
+  # AGL for ~52% of frames) -- skip frames past a physically-plausible
+  # ceiling instead of blending a wrong pose into the mosaic. See
+  # tools/orthoproto/README.md "Known open items".
+  agl_max_m: 100.0
   patch_every_n: 40
   aa_blur_passes: 2
   img_time_offset_s: -0.1

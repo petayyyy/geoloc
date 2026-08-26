@@ -87,8 +87,12 @@ def _cmd_ortho(cfg: dict) -> int:
     cam = Pinhole.from_config(cfg["camera"], float(cfg["camera"].get("scale", 1.0)))
     odom = cap.read_odom()
     stamps, images = cap.read_images(out / "cache_images.npz")
+    Rcl = cfg["camera"].get("Rcl")
+    R_lidar_to_cam = np.array(Rcl, dtype=np.float64).reshape(3, 3) if Rcl else None
     t0 = time.time()
-    stats = run_ortho(align, odom, stamps, images, cam, dsm, dem, cfg["ortho"], out)
+    stats = run_ortho(
+        align, odom, stamps, images, cam, dsm, dem, cfg["ortho"], out, R_lidar_to_cam
+    )
     cover = [s["lidar_coverage_ratio"] for s in stats["frames"]]
     print(
         f"ortho: {len(stats['frames'])} frames warped, "

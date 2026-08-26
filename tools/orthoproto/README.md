@@ -67,7 +67,20 @@ not code, per the project's "thresholds are config" rule.
   height (observed: -9914 m against a real ~150 m ground) instead of being
   rejected. Fixed by invalidating the whole interpolated cell when *any* of
   the 4 corner samples is nodata, not just checking the blended result.
-- **`ortho.py` `warp_frame`** (the most severe of the four): the
+- **`ortho.py` `run_ortho`** (found 2026-08-27, while investigating why an
+  AGL-based mosaic filter alone didn't fix the smear below): the camera's
+  orientation was taken directly from the odometry (lidar/IMU body frame)
+  quaternion, `R_cam_init = _quat_matrix(quat)`, with no camera-to-body
+  extrinsic correction. This rig's `Rcl` (in FAST-LIVO2's
+  `MARS_LVIG_AMtown.yaml` `extrin_calib`) is far from identity, so every
+  rendered ray bundle pointed in a physically wrong direction -- every
+  patch showed a torn "two wings with a gap" pattern instead of a solid
+  footprint, even on frames with sane AGL and good alignment. Fixed by
+  passing `Rcl` through from the capture config (`camera.Rcl`) into
+  `run_ortho(..., R_lidar_to_cam=Rcl)`, composing `R_cam_init = R_body @
+  Rcl.T`. Verified on the real capture (frame idx 40): lidar_coverage_ratio
+  0.0 -> 0.54, confidence mean 3.9 -> 138.
+- **`ortho.py` `warp_frame`** (the most severe of the first four bugs): the
   camera-frame -> world-frame ray direction used `R_cam_utm.T`, the *same*
   rotation as the world -> camera step just above it (`(p - C) @
   R_cam_utm`, which is `R_cam_utm.T @ (p - C)` for a row vector) instead of
@@ -92,18 +105,30 @@ not code, per the project's "thresholds are config" rule.
   window's centre) get the *nearest* window's transform rather than a real
   local fit (`TransformSeries.at` clamps, it doesn't extrapolate) — honest
   but lower-quality at the leading edge of a capture.
-- **`ortho_mosaic.tif` is smeared for this capture** (verified 2026-08-26,
-  after all four bugs above were fixed): individual patches are sharp and
-  correctly geo-referenced where the alignment is good (e.g.
-  `patches/patch_0200.png`, real buildings/road/vegetation, crisp), but
-  `run_ortho`'s computed AGL climbs from a sane ~68 m at the start of the
-  capture to 387 m by the end (`ortho_stats.yaml`; 204/396 frames > 150 m
-  AGL) -- odometry Z-drift during the capture's 180-degree turn (see
-  `align.py`'s own docstring), which the constant-per-window RTK-altitude
-  target in `align_windowed` doesn't correct. Roughly half the frames blend
-  into the mosaic from a substantially wrong camera pose. Not a code bug in
-  the pipeline itself -- a data/alignment-robustness limitation of this
-  particular short, turn-heavy capture. Fixing it properly is T09/T17
-  territory (bias measurement, more robust alignment); a cheap interim
-  mitigation would be excluding high-AGL frames from `_save_mosaic`'s
-  accumulation.
+- **`ortho_mosaic.tif` was smeared for this capture** (first noticed
+  2026-08-26, after the first four bugs above were fixed): `run_ortho`'s
+  computed AGL climbs from a sane ~68 m at the start of the capture to
+  387 m by the end (`ortho_stats.yaml`; 204/396 frames > 150 m AGL) --
+  odometry Z-drift during the capture's 180-degree turn (see `align.py`'s
+  own docstring), which the constant-per-window RTK-altitude target in
+  `align_windowed` doesn't correct. **Mitigation added 2026-08-27**:
+  `ortho.agl_max_m` (100 m in `configs/orthoproto/geoloc_capture_01.yaml`)
+  skips any frame whose computed AGL exceeds it *before* the expensive
+  ray-marching, both dropping the bad poses from the mosaic and cutting
+  render time (275/396 frames skipped on this capture, runtime ~23 min
+  instead of ~75). Confirmed this filter alone does not fully explain the
+  smear -- even sane-AGL frames were torn until the `run_ortho` Rcl fix
+  above landed the same day. With both fixes, `mean lidar coverage` on
+  this capture went 0.0% -> 0.5% (Rcl fix only) -> 8.6% (Rcl fix + AGL
+  filter together), and the mosaic now has one clearly sharp, correctly
+  textured region (real buildings, trees, a dirt road) plus a residual
+  smeared band. That remaining band lines up with the already-documented
+  ~7-9 m windowed RTK alignment residual above, not a new bug: `fit_rigid3`
+  has no outlier rejection, so where the outbound and return legs of the
+  180-degree turn overlap in the mosaic, each pass's few-metre position
+  error shows up as double-vision blending. Properly fixing that is
+  T09/T17 territory (bias measurement, a more robust or globally
+  pose-graph-optimized alignment instead of independent windowed fits);
+  the AGL filter here was a cheap, targeted mitigation for one specific
+  symptom (implausible altitude), not a fix for the underlying alignment
+  noise.

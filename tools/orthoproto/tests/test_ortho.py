@@ -3,9 +3,10 @@
 import numpy as np
 import rasterio.transform
 
+from orthoproto.align import AlignmentResult, TransformSeries
 from orthoproto.camera import Pinhole
 from orthoproto.dsm import NODATA, DsmGrid
-from orthoproto.ortho import DemField, terrain_height, warp_frame
+from orthoproto.ortho import DemField, run_ortho, terrain_height, warp_frame
 
 CFG = {
     "patch_gsd_m": 0.5,
@@ -156,6 +157,118 @@ def test_dem_bilinear_rejects_cells_touching_nodata():
     )
     vals = dem.bilinear(np.array([n / 2.0]), np.array([n / 2.0]))
     assert np.isnan(vals[0]), "a cell touching nodata must not return a blended finite value"
+
+
+def test_run_ortho_skips_frames_above_agl_max(tmp_path):
+    # Regression: a window where the odometry->UTM alignment has drifted
+    # (e.g. FAST-LIVO2 Z drift through an aggressive turn) computes an
+    # implausible AGL and used to blend into the mosaic anyway, smearing it
+    # with a wrong pose. agl_max_m should drop those frames instead.
+    cam = Pinhole(fx=FX, fy=FY, cx=CX, cy=CY)
+    dsm = _flat_world(0.5, 90.0)
+    dem = _flat_dem()
+    identity_series = TransformSeries(
+        times=np.array([0.0, 10.0]),
+        rotations=np.stack([np.eye(3), np.eye(3)]),
+        translations=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+    )
+    align = AlignmentResult(
+        series=identity_series,
+        residuals=np.array([0.0]),
+        residuals_max=np.array([0.0]),
+        window_n=np.array([10]),
+        rtk_alt_used=0.0,
+        z_datum="rtk",
+    )
+    # odom already in UTM (identity series): frame 0 sane AGL (~100 m over
+    # z=0 ground), frame 1 drifted to an implausible 5000 m AGL.
+    odom = np.array(
+        [
+            [0.0, 0.0, 0.0, 100.0, 1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 5000.0, 1.0, 0.0, 0.0, 0.0],
+        ]
+    )
+    img_stamps = np.array([0.0, 1.0])
+    images = np.stack([_render_image(cam, np.array([0.0, 0.0, 100.0]), 100.0)] * 2).astype(
+        np.uint8
+    )
+    cfg = {**CFG, "agl_max_m": 500.0, "aa_blur_passes": 0, "img_time_offset_s": 0.0}
+
+    stats = run_ortho(align, odom, img_stamps, images, cam, dsm, dem, cfg, tmp_path)
+
+    frames = stats["frames"]
+    assert frames[0].get("skipped", False) is False
+    assert frames[1]["skipped"] is True
+    assert frames[1]["lidar_coverage_ratio"] == 0.0
+
+
+def test_run_ortho_applies_lidar_to_camera_extrinsic(tmp_path):
+    # Regression: run_ortho used to treat the odometry orientation (the
+    # lidar/IMU body frame) as the camera's own orientation. On a rig where
+    # the camera is mounted at a real angle to the lidar (Rcl far from
+    # identity, as on this capture's DJI payload), that pointed every
+    # rendered ray bundle in the wrong direction -- verified on the real
+    # capture as a torn "two wings with a gap" pattern instead of a solid
+    # footprint, even on frames with sane AGL and alignment. Build a body
+    # orientation that is nadir only *after* undoing a known Rcl, and check
+    # that only passing that Rcl to run_ortho recovers the flat-ground
+    # texture; omitting it must NOT (otherwise this test would not be
+    # exercising anything).
+    cam = Pinhole(fx=FX, fy=FY, cx=CX, cy=CY)
+    dsm = _flat_world(0.5, 90.0)
+    dem = _flat_dem()
+    height = 100.0
+    C0 = np.array([0.0, 0.0, height])
+    img = _render_image(cam, C0, height)
+
+    # A deliberately non-trivial body->camera rotation (not close to
+    # identity or to R_NADIR), matching how far this capture's real Rcl is
+    # from identity.
+    R_lidar_to_cam = np.array(
+        [
+            [-0.0022464, -0.9997299, -0.0231319],
+            [-0.0084211, 0.0231501, -0.9996966],
+            [0.9999620, -0.0020509, -0.0084708],
+        ]
+    )
+    # Choose the body orientation so that body_R @ R_lidar_to_cam.T == R_NADIR,
+    # i.e. this body pose really does look straight down once Rcl is undone.
+    R_body = R_NADIR @ R_lidar_to_cam
+    quat = _rotm_to_quat_wxyz(R_body)
+
+    identity_series = TransformSeries(
+        times=np.array([0.0, 10.0]),
+        rotations=np.stack([np.eye(3), np.eye(3)]),
+        translations=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+    )
+    align = AlignmentResult(
+        series=identity_series,
+        residuals=np.array([0.0]),
+        residuals_max=np.array([0.0]),
+        window_n=np.array([10]),
+        rtk_alt_used=0.0,
+        z_datum="rtk",
+    )
+    odom = np.array([[0.0, C0[0], C0[1], C0[2], *quat]])
+    img_stamps = np.array([0.0])
+    images = np.stack([img]).astype(np.uint8)
+    cfg = {**CFG, "aa_blur_passes": 0, "img_time_offset_s": 0.0}
+
+    stats_with = run_ortho(
+        align, odom, img_stamps, images, cam, dsm, dem, cfg, tmp_path / "with", R_lidar_to_cam
+    )
+    stats_without = run_ortho(
+        align, odom, img_stamps, images, cam, dsm, dem, cfg, tmp_path / "without", None
+    )
+
+    assert stats_with["frames"][0]["lidar_coverage_ratio"] > 0.3
+    assert stats_without["frames"][0]["lidar_coverage_ratio"] < 0.05
+
+
+def _rotm_to_quat_wxyz(R: np.ndarray) -> np.ndarray:
+    from orthoproto.align import rotm_to_quat
+
+    return rotm_to_quat(R)
 
 
 def test_camera_at_patch_centre_projection_symmetry():

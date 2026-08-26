@@ -235,10 +235,31 @@ def run_ortho(
     dem: DemField,
     cfg: dict,
     out_dir: Path,
+    R_lidar_to_cam: np.ndarray | None = None,
 ) -> dict:
+    """R_lidar_to_cam ("Rcl" in the FAST-LIVO2 extrinsic_calib config): the
+    fixed rotation from the lidar/IMU body frame (what `odom`'s orientation
+    is expressed in) to the camera's own optical frame. The camera is
+    mounted at a real, non-trivial angle to the lidar on this rig -- Rcl is
+    far from identity -- so treating the odometry orientation as the
+    camera's own orientation (the previous default) pointed the projected
+    ray bundle in a physically wrong direction: verified on the real
+    capture, every rendered patch showed a torn "two wings with a gap"
+    pattern (the direction where the misoriented bundle grazes/misses the
+    ground) instead of a solid ground footprint, on frames whose AGL and
+    alignment were otherwise sane. Passing Rcl fixed it (idx 40 in this
+    capture: lidar_coverage_ratio 0.0 -> 0.54, confidence mean 3.9 -> 138).
+    """
+    R_lidar_to_cam = np.eye(3) if R_lidar_to_cam is None else R_lidar_to_cam
     patch_every = int(cfg.get("patch_every_n", 40))
     aa_passes = int(cfg.get("aa_blur_passes", 2))
     img_offset = float(cfg.get("img_time_offset_s", -0.1))
+    # Frames where the alignment's odometry -> UTM transform has drifted (e.g.
+    # FAST-LIVO2 Z drift through an aggressive turn) compute an implausible
+    # AGL and poison the mosaic blend with a wrong pose; skip them rather than
+    # accumulate garbage. None disables the filter.
+    agl_max_m = cfg.get("agl_max_m")
+    agl_max_m = float(agl_max_m) if agl_max_m is not None else None
 
     (out_dir / "patches").mkdir(parents=True, exist_ok=True)
     stats = []
@@ -258,13 +279,31 @@ def run_ortho(
     acc = np.zeros((m_h, m_w, 3), dtype=np.float64)
     wgt = np.zeros((m_h, m_w), dtype=np.float64)
 
+    n_skipped = 0
     for idx in range(len(images)):
         t_pose = img_stamps[idx] + img_offset
         pos, quat = interpolate_odom_pose(odom, t_pose)
         R_align, tr_align = align.series.at(t_pose)
         C = R_align @ pos + tr_align
-        R_cam_init = _quat_matrix(quat)
+        R_body = _quat_matrix(quat)
+        R_cam_init = R_body @ R_lidar_to_cam.T
         R_cam_utm = R_align @ R_cam_init
+
+        if agl_max_m is not None:
+            z_cam, _ = terrain_height(np.array([C[0]]), np.array([C[1]]), dsm, dem)
+            agl_precheck = C[2] - z_cam[0]
+            if not np.isfinite(agl_precheck) or agl_precheck > agl_max_m:
+                n_skipped += 1
+                stats.append(
+                    {
+                        "idx": idx,
+                        "t": float(img_stamps[idx]),
+                        "agl": float(agl_precheck),
+                        "lidar_coverage_ratio": 0.0,
+                        "skipped": True,
+                    }
+                )
+                continue
 
         img = box_blur(images[idx], aa_passes) if aa_passes else images[idx].astype(np.float64)
         res = warp_frame(img, cam, R_cam_utm, C, dsm, dem, cfg)
@@ -288,6 +327,8 @@ def run_ortho(
                 "lidar_coverage_ratio": res["lidar_coverage_ratio"],
             }
         )
+    if agl_max_m is not None:
+        print(f"ortho: skipped {n_skipped}/{len(images)} frames with agl > {agl_max_m} m")
 
     _save_mosaic(out_dir, acc, wgt, e_min, n_max, gsd, stats)
     return {"frames": stats}
