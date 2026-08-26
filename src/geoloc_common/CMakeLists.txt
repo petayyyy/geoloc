@@ -34,6 +34,7 @@ if(BUILD_TESTING)
   ament_add_test(geoloc_common_properties
     COMMAND $<TARGET_FILE:test_geoloc_common>
     TIMEOUT 120
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )
 endif()
 

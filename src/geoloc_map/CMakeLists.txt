@@ -51,7 +51,8 @@ if(BUILD_TESTING)
   add_executable(test_map_core test/test_map_core.cpp)
   target_include_directories(test_map_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   ament_target_dependencies(test_map_core geoloc_common)
-  ament_add_test(map_core COMMAND $<TARGET_FILE:test_map_core> TIMEOUT 120)
+  ament_add_test(map_core COMMAND $<TARGET_FILE:test_map_core> TIMEOUT 120
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO)
 
   # Integration test against the real Maykop geopack. Skips (exit 0) when the
   # mission data is absent, e.g. in a bare cross-build container.
@@ -61,7 +62,8 @@ if(BUILD_TESTING)
   set(_GEOPACK_MANIFEST
     ${CMAKE_CURRENT_SOURCE_DIR}/../../data/missions/maykop-corridor-2026-08.geopack/manifest.yaml)
   ament_add_test(geopack_integration
-    COMMAND $<TARGET_FILE:test_geopack> ${_GEOPACK_MANIFEST} TIMEOUT 120)
+    COMMAND $<TARGET_FILE:test_geopack> ${_GEOPACK_MANIFEST} TIMEOUT 120
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO)
 endif()
 
 ament_package()
