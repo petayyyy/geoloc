@@ -58,6 +58,7 @@ ortho:                      # T14, T15
 
 # ---------------------------------------------------------------------------
 map:                        # T07
+  primary_layer: "ortho_a"  # served by ~/map_window; ortho_b for cross-checks
   descriptor_cache:
     invalidate_on_shift_fraction: 0.30
     invalidate_on_model_change: true   # easy to forget; produces a silent
