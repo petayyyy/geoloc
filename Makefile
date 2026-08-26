@@ -3,7 +3,7 @@
 # Cross-build for aarch64 is a BLOCKING PR step on purpose (plan/testing/06-ci.md):
 # an ARM build failure found a week later costs far more than 10 minutes per PR.
 
-.PHONY: help build-x86 build-arm test test-common lint clean deploy bench gen-skeletons
+.PHONY: help build-x86 build-arm test test-common test-phasecorr lint clean deploy bench gen-skeletons
 
 BOARD ?= orangepi.local
 BOARD_USER ?= geoloc
@@ -40,6 +40,16 @@ test-common:
 		src/geoloc_common/test/test_geoloc_common.cpp \
 		-o build/standalone/test_geoloc_common
 	./build/standalone/test_geoloc_common
+
+# Standalone build of the phase-correlation channel tests (T19-U-01..05).
+# Dependency-free like test-common: header-only FFT + matcher, Eigen only.
+test-phasecorr:
+	@mkdir -p build/standalone
+	g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
+		-I src/geoloc_matcher/include -I src/geoloc_common/include -I /usr/include/eigen3 \
+		src/geoloc_matcher/test/test_phase_corr.cpp \
+		-o build/standalone/test_phase_corr
+	./build/standalone/test_phase_corr
 
 lint:
 	pre-commit run --all-files

@@ -3,7 +3,7 @@
 <package format="3">
   <name>geoloc_matcher</name>
   <version>0.1.0</version>
-  <description>Features, correspondences, SE(2) estimation, channel arbitration (primary -> fallback). Skeleton; implementation in task T16-T20.</description>
+  <description>Features, correspondences, SE(2) estimation, channel arbitration (primary -> fallback). Phase-correlation fallback channel (T19) implemented; XFeat primary channel lands in T16/T17.</description>
   <maintainer email="dev@example.invalid">geoloc team</maintainer>
   <license>Proprietary</license>
 
@@ -12,6 +12,7 @@
   <depend>rclcpp</depend>
   <depend>geoloc_msgs</depend>
   <depend>geoloc_common</depend>
+  <depend>eigen</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>

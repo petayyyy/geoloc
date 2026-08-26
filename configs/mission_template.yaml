@@ -95,6 +95,23 @@ matcher:                    # T17-T20
     semantic_enabled: false            # T20, enable after mIoU >= 0.55
     switch_after_failed_frames: 2
 
+  phase_correlation:          # T19 -- log-polar phase correlation on gradients
+    # Correlates on gradient ORIENTATION, not intensity: invariant to monotonic
+    # illumination / cross-provider radiometry, exactly what kills point
+    # features. Coarse by design (5-15 m, 1-3 deg): keeps covariance bounded
+    # when XFeat is silent, never competes with it on accuracy.
+    grad_thresh_rel: 0.0      # fraction of mean gradient magnitude below which
+                              # a pixel is treated as texture-free
+    coarse_max_deg: 18.0      # rotation sweep bound (patch is pre-rectified)
+    coarse_step_deg: 6.0      # sweep step; FMT does the actual rotation estimate
+    nrho: 64                  # log-polar radial samples (power of two)
+    ntheta: 512               # log-polar angular samples (power of two)
+    scale_check_tolerance: 0.10   # diagnostic: |estimated scale - 1| > this = bad match
+    prior_window_radius_m: 60.0   # T17: replaced by 3*sqrt(sigma^2)+margin from fusion
+    position_sigma_m: 8.0     # coarse covariance envelope (T21 refines)
+    yaw_sigma_deg: 1.5
+    basemap_bias_sigma_m: 3.0
+
 # ---------------------------------------------------------------------------
 integrity:                  # T22 -- the system's main safety interlock
   # Target: IFR < 0.5% (accepted fixes with >50 m error). ADR-006 makes this
