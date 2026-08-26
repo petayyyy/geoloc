@@ -58,14 +58,21 @@ class GridGeoid:
     def undulation_array(self, lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
         lat = np.asarray(lat, dtype=np.float64)
         lon = np.asarray(lon, dtype=np.float64)
-        rows, cols = rasterio.transform.rowcol(self._ds.transform, lon, lat)
+        shape = lat.shape
+        # rasterio.transform.rowcol always returns flat sequences, regardless
+        # of the input array's shape, so the 2D grid case (e.g. a DEM raster
+        # of lat/lon per pixel) must be raveled going in and reshaped coming
+        # back out.
+        rows, cols = rasterio.transform.rowcol(self._ds.transform, lon.ravel(), lat.ravel())
+        rows = np.asarray(rows)
+        cols = np.asarray(cols)
         cols = np.clip(cols, 0, self._ds.width - 1)
         rows = np.clip(rows, 0, self._ds.height - 1)
         r0, r1 = int(rows.min()), int(rows.max())
         c0, c1 = int(cols.min()), int(cols.max())
         window = rasterio.windows.Window(c0, r0, c1 - c0 + 1, r1 - r0 + 1)
         values = self._ds.read(1, window=window)
-        return values[rows - r0, cols - c0]
+        return values[rows - r0, cols - c0].reshape(shape)
 
 
 def resolve_egm2008_grid(cache_dir: Path | None = None, offline: bool = False) -> Path:

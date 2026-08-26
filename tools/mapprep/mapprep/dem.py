@@ -84,7 +84,10 @@ def fetch_dem_tiles(
             continue
         if offline:
             raise DemFetchError(f"DEM tile {name} not cached at {path}; build with network once")
-        url = f"{GLO30_BUCKET}/{name}"
+        # Each tile lives in an S3 "directory" of the same name as the file
+        # (see the AWS Open Data Registry layout for Copernicus DEM GLO-30).
+        stem = name[: -len(".tif")]
+        url = f"{GLO30_BUCKET}/{stem}/{name}"
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(request, timeout=120) as response:

@@ -96,6 +96,22 @@ def test_grid_geoid_array_sampling(tmp_path):
         geoid.close()
 
 
+def test_grid_geoid_2d_array_sampling(tmp_path):
+    # dem.py samples the geoid on a 2D (height, width) lat/lon grid, not a
+    # flat list of points; the result must keep that shape.
+    path = _write_geoid_grid(tmp_path / "geoid.tif", _undulation_field)
+    geoid = GridGeoid(path)
+    try:
+        lats = np.array([[44.82, 44.83], [44.84, 44.85]])
+        lons = np.array([[39.91, 39.92], [39.93, 39.94]])
+        values = geoid.undulation_array(lats, lons)
+        assert values.shape == lats.shape
+        expected = _undulation_field(lats, lons)
+        assert np.allclose(values, expected, atol=0.05)
+    finally:
+        geoid.close()
+
+
 def test_constant_geoid_array_broadcasts():
     geoid = ConstantGeoid(9.0)
     lats = np.zeros((3, 4))

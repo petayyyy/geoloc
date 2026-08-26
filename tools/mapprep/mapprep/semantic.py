@@ -48,17 +48,19 @@ def overpass_query(bounds_wgs84: dict) -> str:
         bounds_wgs84["north"],
         bounds_wgs84["east"],
     )
+    # Overpass QL bbox filters take four bare numbers, not a quoted string --
+    # way["k"]("s,w,n,e") is a syntax error (HTTP 400), way["k"](s,w,n,e) is not.
     bbox = f"{south},{west},{north},{east}"
     return (
         "[out:json][timeout:60];\n"
         "(\n"
-        f'  way["building"]("{bbox}");\n'
-        f'  way["natural"~"water|wood"]("{bbox}");\n'
-        f'  way["waterway"]("{bbox}");\n'
-        f'  way["highway"]("{bbox}");\n'
-        f'  way["landuse"~"reservoir|basin|farmland|farmyard|forest|forestry"]("{bbox}");\n'
-        f'  way["water"]("{bbox}");\n'
-        f'  way["farmland"]("{bbox}");\n'
+        f'  way["building"]({bbox});\n'
+        f'  way["natural"~"water|wood"]({bbox});\n'
+        f'  way["waterway"]({bbox});\n'
+        f'  way["highway"]({bbox});\n'
+        f'  way["landuse"~"reservoir|basin|farmland|farmyard|forest|forestry"]({bbox});\n'
+        f'  way["water"]({bbox});\n'
+        f'  way["farmland"]({bbox});\n'
         ");\n"
         "out body;\n"
         ">;\n"
