@@ -1,11 +1,25 @@
 """camera_init -> UTM alignment through the RTK anchor (T14/T15 step 1).
 
-The odometry frame is pinned to the geopack UTM CRS by fitting, in sliding
-time windows, a rigid SE(3) transform between time-synced FAST-LIVO2 odometry
-positions and RTK fixes. A single global transform is NOT used on purpose:
-FAST-LIVO2 heading drifts during aggressive turns (observable in this capture
-on the 180-degree return), and the windowed series tracks that drift locally
-while the residual statistics in the report quantify it honestly.
+Two alignment strategies are implemented, selected by the capture config
+(`align.method`, default `pose_graph`):
+
+- `align_windowed` (legacy): fits an independent rigid SE(3) Kabsch transform
+  in each sliding time window. Retained as a fallback / comparison point.
+- `align_pose_graph` (default): a small global pose-graph / bundle adjustment
+  over the whole sequence. It first *levels* the odometry frame (fixing the
+  physical up axis from PCA of the path, see `pca_up_axis`), which removes the
+  FAST-LIVO2 Z/tilt drift through aggressive turns (the cause of the 387 m
+  AGL artefacts on `geoloc_capture_01`), then jointly optimizes a slowly
+  drifting heading + translation with a global scale. The scale is a genuine,
+  measurable property of this capture: the replayed FAST-LIVO2 odometry
+  under-measures distance by ~22% (verified empirically: a per-window rigid
+  fit leaves a ~8 m residual that a similarity fit collapses to ~0.16 m on the
+  straight legs). RTK fixes enter as sparse absolute constraints with a Huber
+  robust loss (E/N only -- the RTK altitude is frozen and unreliable, see
+  README), while the odometry's own relative motion keeps the local shape.
+
+The Z target is a constant (median RTK altitude across the segment), never a
+per-point RTK altitude; the absolute Z is corrected later by `dsm.anchor_to_dem`.
 """
 
 from __future__ import annotations
@@ -120,10 +134,11 @@ class TransformSeries:
     interpolated rotation and applied to the final output only.
     """
 
-    times: np.ndarray  # (K,) window-centre times, seconds, ascending
+    times: np.ndarray  # (K,) node times, seconds, ascending
     rotations: np.ndarray  # (K, 3, 3), proper rotations
     translations: np.ndarray  # (K, 3)
     mirror_z: bool = False
+    scale: float = 1.0  # global scale of the camera_init frame (1.0 = rigid)
 
     @staticmethod
     def _mirror(v: np.ndarray) -> np.ndarray:
@@ -150,7 +165,7 @@ class TransformSeries:
 
     def apply(self, xyz: np.ndarray, t: float) -> np.ndarray:
         R, tr = self.at(t)
-        return xyz @ R.T + tr
+        return xyz @ R.T * self.scale + tr
 
     def shift_z(self, dz: float) -> TransformSeries:
         self.translations = self.translations.copy()
@@ -164,6 +179,7 @@ class TransformSeries:
             "rotations": self.rotations.reshape(-1, 9).tolist(),
             "translations": self.translations.tolist(),
             "mirror_z": bool(self.mirror_z),
+            "scale": float(self.scale),
         }
 
     @classmethod
@@ -173,6 +189,7 @@ class TransformSeries:
             rotations=np.asarray(d["rotations"], dtype=np.float64).reshape(-1, 3, 3),
             translations=np.asarray(d["translations"], dtype=np.float64),
             mirror_z=bool(d.get("mirror_z", False)),
+            scale=float(d.get("scale", 1.0)),
         )
 
 
@@ -353,6 +370,276 @@ def align_windowed(
         residuals=np.asarray(res_means),
         residuals_max=np.asarray(res_maxs),
         window_n=np.asarray(ns, dtype=np.int64),
+        rtk_alt_used=rtk_alt,
+        z_datum="rtk",
+    )
+
+
+def _rot_about(vec: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Minimal-rotation matrix mapping unit ``vec`` onto unit ``target``."""
+    vec = vec / np.linalg.norm(vec)
+    target = target / np.linalg.norm(target)
+    a = np.cross(vec, target)
+    s = np.linalg.norm(a)
+    c = float(np.dot(vec, target))
+    if s < 1e-12:
+        return np.eye(3) if c > 0 else -np.eye(3)
+    K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+    return np.eye(3) + K + K @ K * ((1 - c) / (s * s))
+
+
+def _Rz(theta: float) -> np.ndarray:
+    """3D rotation about the +Z axis by ``theta`` (heading)."""
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def _R2(theta: float) -> np.ndarray:
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s], [s, c]])
+
+
+def _dR2(theta: float) -> np.ndarray:
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[-s, -c], [c, -s]])
+
+
+def _similarity2d(A: np.ndarray, B: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+    """Closed-form 2D similarity (scale + rotation + translation) A -> B."""
+    ca, cb = A.mean(axis=0), B.mean(axis=0)
+    Ac, Bc = A - ca, B - cb
+    U, _S, Vt = np.linalg.svd(Ac.T @ Bc)
+    R = Vt.T @ U.T
+    if np.linalg.det(R) < 0:
+        Vt[-1] *= -1
+        R = Vt.T @ U.T
+    denom = float(np.sum(Ac * Ac))
+    s = float(np.einsum("ij,ij->", Ac @ R.T, Bc) / denom) if denom > 1e-12 else 1.0
+    t = cb - s * R @ ca
+    return s, R, t
+
+
+def _rigid2d(A: np.ndarray, B: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    ca, cb = A.mean(axis=0), B.mean(axis=0)
+    U, _S, Vt = np.linalg.svd((A - ca).T @ (B - cb))
+    R = Vt.T @ U.T
+    if np.linalg.det(R) < 0:
+        Vt[-1] *= -1
+        R = Vt.T @ U.T
+    return R, cb - R @ ca
+
+
+def align_pose_graph(
+    odom: np.ndarray,
+    rtk_utm: np.ndarray,
+    up_odom: np.ndarray | None = None,
+    step_s: float = 2.0,
+    rtk_weight: float = 1.0,
+    smooth_weight: float = 0.5,
+    rtk_huber_m: float = 2.0,
+    max_iter: int = 200,
+) -> AlignmentResult:
+    """Global pose-graph alignment of the whole trajectory.
+
+    Level the odometry frame (fixed physical-up rotation), then jointly fit a
+    slowly drifting heading + translation and a *global scale* so the odometry
+    trajectory matches the RTK fixes in E/N. RTK fixes enter as sparse absolute
+    constraints with a Huber robust loss; the odometry's own relative motion
+    between keyframes preserves the local shape (it is exact, not a soft
+    spring -- short-baseline LIO relative motion is accurate to ~cm here).
+
+    Z is never pulled from the RTK fixes: the alignment's Z target is a single
+    constant (median RTK altitude), and the absolute Z is corrected later by
+    ``dsm.anchor_to_dem``. This mirrors the legacy windowed behaviour and is
+    deliberate (the RTK altitude in ``geoloc_capture_01`` is frozen/unreliable).
+
+    Args:
+        odom: (N, 8) rows (t, x, y, z, qw, qx, qy, qz).
+        rtk_utm: (M, 4) rows (t, east, north, alt) -- already lat/lon-swapped
+            and UTM-projected by the caller.
+        up_odom: physical up direction in the odometry frame; required for the
+            leveling step that removes FAST-LIVO2 Z/tilt drift.
+    """
+    rtk_alt = float(np.median(rtk_utm[:, 3]))
+    odom_t_min, odom_t_max = odom[0, 0], odom[-1, 0]
+
+    # Only align RTK fixes that have odometry coverage.
+    sel_rtk = (rtk_utm[:, 0] >= odom_t_min) & (rtk_utm[:, 0] <= odom_t_max)
+    if int(sel_rtk.sum()) < 6:
+        raise ValueError("align_pose_graph: too few RTK fixes within odometry coverage")
+    tt = rtk_utm[sel_rtk, 0]
+    B = rtk_utm[sel_rtk, 1:3]
+    n = len(tt)
+
+    if up_odom is not None:
+        R_up = _rot_about(np.asarray(up_odom), np.array([0.0, 0.0, 1.0]))
+    else:
+        R_up = np.eye(3)
+
+    def levelled_pos(times: np.ndarray) -> np.ndarray:
+        pos = np.array([interpolate_odom_pose(odom, t)[0] for t in times])
+        return (R_up @ pos.T).T
+
+    A = levelled_pos(tt)  # (n, 3) leveled odometry at RTK fixes
+
+    # Keyframe grid over the RTK range.
+    t0, t1 = float(tt[0]), float(tt[-1])
+    kt = np.arange(t0, t1 + step_s, step_s)
+    if kt[-1] < t1:
+        kt = np.append(kt, t1)
+    pk = levelled_pos(kt)[:, :2]  # (K, 2)
+    K = len(kt)
+    M = K - 1  # number of inter-keyframe segments / headings
+    dP = np.diff(pk, axis=0)  # (M, 2)
+    seg = np.clip(np.searchsorted(kt, tt, side="right") - 1, 0, M - 1)
+    partial = A[:, :2] - pk[seg]  # (n, 2)
+
+    # Initial guess: global similarity.
+    s0, Rg, tg = _similarity2d(A[:, :2], B)
+    th0 = float(np.arctan2(Rg[1, 0], Rg[0, 0]))
+
+    # Per-keyframe heading init (unwrapped local rigid fits) for a good start.
+    As = A[:, :2] * s0
+    theta = np.full(M, th0)
+    half = max(step_s * 1.5, 1.5)
+    for j in range(M):
+        wsel = np.abs(tt - kt[j]) <= half
+        if int(wsel.sum()) < 6:
+            continue
+        Rj, _ = _rigid2d(As[wsel], B[wsel])
+        theta[j] = np.arctan2(Rj[1, 0], Rj[0, 0])
+    theta = th0 + np.mod(theta - th0 + np.pi, 2 * np.pi) - np.pi
+
+    P0 = tg
+    s = s0
+
+    def kf_positions(P0v: np.ndarray, sv: float, th: np.ndarray) -> np.ndarray:
+        P = np.empty((K, 2))
+        P[0] = P0v
+        c = np.cos(th)
+        sj = np.sin(th)
+        for j in range(M):
+            P[j + 1] = P[j] + sv * np.array(
+                [c[j] * dP[j, 0] - sj[j] * dP[j, 1], sj[j] * dP[j, 0] + c[j] * dP[j, 1]]
+            )
+        return P
+
+    nv = 3 + M
+    nres = 2 * n + (M - 1)
+    lam = 1e-3
+    prev_cost = np.inf
+
+    for _it in range(max_iter):
+        Pk = kf_positions(P0, s, theta)
+        c = np.cos(theta[seg])
+        sj = np.sin(theta[seg])
+        rot_part = s * np.column_stack(
+            [c * partial[:, 0] - sj * partial[:, 1], sj * partial[:, 0] + c * partial[:, 1]]
+        )
+        Pt = Pk[seg] + rot_part  # (n, 2) aligned E/N per RTK fix
+        e_abs = (Pt - B).ravel()
+        e_smo = theta[1:] - theta[:-1]
+
+        hub = np.where(np.abs(e_abs) > rtk_huber_m, rtk_huber_m / np.abs(e_abs), 1.0)
+        ra = np.abs(e_abs)
+        cost = rtk_weight * np.where(
+            ra <= rtk_huber_m, 0.5 * ra**2, rtk_huber_m * (ra - 0.5 * rtk_huber_m)
+        ).sum() + smooth_weight * 0.5 * np.sum(e_smo**2)
+
+        # Analytic Jacobian.
+        J = np.zeros((nres, nv))
+        # keyframe position derivatives
+        dPkf_ds = np.zeros((K, 2))
+        dPkf_dth = np.zeros((M, K, 2))
+        for j in range(M):
+            Rj2 = _R2(theta[j])
+            Mj = _dR2(theta[j])
+            dPkf_ds[j + 1 :] += Rj2 @ dP[j]
+            dPkf_dth[j, j + 1 :] = s * (Mj @ dP[j])
+        for i in range(n):
+            si = seg[i]
+            J[2 * i : 2 * i + 2, 0:2] = np.eye(2)
+            J[2 * i : 2 * i + 2, 2] = dPkf_ds[si] + rot_part[i] / s
+            for k in range(si):
+                J[2 * i : 2 * i + 2, 3 + k] = dPkf_dth[k, si]
+            J[2 * i : 2 * i + 2, 3 + si] += s * (_dR2(theta[si]) @ partial[i])
+        for j in range(M - 1):
+            J[2 * n + j, 3 + j] = -1.0
+            J[2 * n + j, 3 + j + 1] = 1.0
+
+        e = np.concatenate([e_abs, e_smo])
+        W = np.concatenate([rtk_weight * hub, np.full(M - 1, smooth_weight)])
+        g = J.T @ (W * e)
+        H = J.T @ (W[:, None] * J)
+
+        accepted = False
+        while lam < 1e15:
+            try:
+                dx = np.linalg.solve(H + lam * np.eye(nv), -g)
+            except np.linalg.LinAlgError:
+                lam *= 10.0
+                continue
+            P0n = P0 + dx[:2]
+            sn = s + dx[2]
+            thn = theta + dx[3:]
+            Pn = kf_positions(P0n, sn, thn)
+            cn = np.cos(thn[seg])
+            sjn = np.sin(thn[seg])
+            rpn = sn * np.column_stack(
+                [cn * partial[:, 0] - sjn * partial[:, 1], sjn * partial[:, 0] + cn * partial[:, 1]]
+            )
+            ea = (Pn[seg] + rpn - B).ravel()
+            es = thn[1:] - thn[:-1]
+            ra = np.abs(ea)
+            costn = rtk_weight * np.where(
+                ra <= rtk_huber_m, 0.5 * ra**2, rtk_huber_m * (ra - 0.5 * rtk_huber_m)
+            ).sum() + smooth_weight * 0.5 * np.sum(es**2)
+            if costn < cost:
+                P0, s, theta = P0n, sn, thn
+                lam = max(lam * 0.3, 1e-10)
+                accepted = True
+                break
+            lam *= 10.0
+        if not accepted:
+            break
+        if abs(cost - prev_cost) <= 1e-9 * max(1.0, cost):
+            break
+        prev_cost = cost
+
+    # Build the output TransformSeries (leveled frame, heading + scale).
+    Pk = kf_positions(P0, s, theta)
+    full_theta = np.append(theta, theta[-1])  # last keyframe reuses the last heading
+    rots = np.array([_Rz(th) @ R_up for th in full_theta])
+    z0 = rtk_alt - s * float(np.median(A[:, 2]))
+    trans = np.empty((K, 3))
+    for j in range(K):
+        R2z = _Rz(full_theta[j])
+        lev = np.array([pk[j, 0], pk[j, 1], 0.0])
+        rot = R2z @ lev
+        trans[j] = [Pk[j, 0] - s * rot[0], Pk[j, 1] - s * rot[1], z0]
+
+    # Residuals reported per keyframe (mean/max horizontal RTK residual).
+    c = np.cos(theta[seg])
+    sj = np.sin(theta[seg])
+    rot_part = s * np.column_stack(
+        [c * partial[:, 0] - sj * partial[:, 1], sj * partial[:, 0] + c * partial[:, 1]]
+    )
+    Pt = Pk[seg] + rot_part
+    resid = np.linalg.norm(Pt - B, axis=1)
+    res_means = np.array([resid[seg == j].mean() if (seg == j).any() else 0.0 for j in range(M)])
+    res_maxs = np.array([resid[seg == j].max() if (seg == j).any() else 0.0 for j in range(M)])
+    ns = np.array([(seg == j).sum() for j in range(M)], dtype=np.int64)
+
+    return AlignmentResult(
+        series=TransformSeries(
+            times=kt,
+            rotations=rots,
+            translations=trans,
+            scale=s,
+        ),
+        residuals=res_means,
+        residuals_max=res_maxs,
+        window_n=ns,
         rtk_alt_used=rtk_alt,
         z_datum="rtk",
     )

@@ -130,8 +130,7 @@ def accumulate_clouds(
     z2_flat = z2_sum.ravel()
 
     for t, xyz in clouds:
-        R, tr = series.at(t)
-        p = xyz.astype(np.float64) @ R.T + tr
+        p = series.apply(xyz.astype(np.float64), t)
         # range gate: keep points within range_max of the drone position.
         # No absolute-Z sanity floor here on purpose: align.series is not
         # DEM-shifted yet at this point (anchor_to_dem runs after this pass),
@@ -141,7 +140,7 @@ def accumulate_clouds(
         # would reject real points for a datum reason, not a data-quality one.
         # The drone-relative distance gate is the meaningful physical filter.
         drone, _ = interpolate_odom_pose(odom, t)
-        drone_utm = R @ drone + tr
+        drone_utm = series.apply(drone[None, :].astype(np.float64), t)[0]
         d2 = (p - drone_utm) ** 2
         keep = d2.sum(axis=1) <= range_max_m**2
         p = p[keep]

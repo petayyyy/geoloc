@@ -12,6 +12,7 @@ import yaml
 
 from .align import (
     AlignmentResult,
+    align_pose_graph,
     align_windowed,
     orient_up_from_cloud,
     pca_up_axis,
@@ -44,12 +45,39 @@ def _cmd_align(cfg: dict) -> int:
     # the lidar cloud lies below the drone, which resolves it
     up_pca = pca_up_axis(odom)
     up_odom = orient_up_from_cloud(odom, cap.iter_clouds(), up_pca)
-    res = align_windowed(odom, rtk_utm, up_odom=up_odom, **cfg["align"])
+    method = cfg["align"].get("method", "pose_graph")
+    if method == "pose_graph":
+        res = align_pose_graph(
+            odom,
+            rtk_utm,
+            up_odom=up_odom,
+            step_s=float(cfg["align"].get("step_s", 2.0)),
+            rtk_weight=float(cfg["align"].get("rtk_weight", 1.0)),
+            smooth_weight=float(cfg["align"].get("smooth_weight", 0.5)),
+            rtk_huber_m=float(cfg["align"].get("rtk_huber_m", 2.0)),
+            max_iter=int(cfg["align"].get("max_iter", 200)),
+        )
+    elif method == "windowed":
+        res = align_windowed(
+            odom,
+            rtk_utm,
+            up_odom=up_odom,
+            window_s=float(cfg["align"].get("window_s", 12.0)),
+            step_s=float(cfg["align"].get("window_step_s", 4.0)),
+            min_pairs=int(cfg["align"].get("min_pairs", 8)),
+        )
+    else:
+        print(
+            f"align: unknown method {method!r} (expected 'pose_graph' or 'windowed')",
+            file=sys.stderr,
+        )
+        return 2
     out = Path(cfg["out_dir"])
     out.mkdir(parents=True, exist_ok=True)
     res.save(out / "align.yaml")
     print(
-        f"align: {len(res.series.times)} windows, "
+        f"align: {method}, {len(res.series.times)} nodes, "
+        f"scale={res.series.scale:.4f}, "
         f"residual mean={res.residuals.mean():.2f} m max={res.residuals.max():.2f} m "
         f"({time.time() - t0:.1f}s)"
     )

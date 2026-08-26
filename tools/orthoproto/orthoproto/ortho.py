@@ -260,6 +260,10 @@ def run_ortho(
     # accumulate garbage. None disables the filter.
     agl_max_m = cfg.get("agl_max_m")
     agl_max_m = float(agl_max_m) if agl_max_m is not None else None
+    # Optional frame cap for fast iteration (None = all frames). Renders only
+    # the first ``max_frames`` frames; keep it unset for a full run.
+    max_frames = cfg.get("max_frames")
+    max_frames = int(max_frames) if max_frames is not None else None
 
     (out_dir / "patches").mkdir(parents=True, exist_ok=True)
     stats = []
@@ -280,11 +284,12 @@ def run_ortho(
     wgt = np.zeros((m_h, m_w), dtype=np.float64)
 
     n_skipped = 0
-    for idx in range(len(images)):
+    n_frames = len(images) if max_frames is None else min(max_frames, len(images))
+    for idx in range(n_frames):
         t_pose = img_stamps[idx] + img_offset
         pos, quat = interpolate_odom_pose(odom, t_pose)
-        R_align, tr_align = align.series.at(t_pose)
-        C = R_align @ pos + tr_align
+        R_align, _ = align.series.at(t_pose)
+        C = align.series.apply(pos[None, :], t_pose)[0]
         R_body = _quat_matrix(quat)
         R_cam_init = R_body @ R_lidar_to_cam.T
         R_cam_utm = R_align @ R_cam_init
@@ -316,7 +321,7 @@ def run_ortho(
         acc[r0 : r0 + ph, c0 : c0 + pw] += res["rgb"] * w[..., None]
         wgt[r0 : r0 + ph, c0 : c0 + pw] += w
 
-        if idx % patch_every == 0 or idx == len(images) - 1:
+        if idx % patch_every == 0 or idx == n_frames - 1:
             _save_patch(out_dir, idx, res)
 
         stats.append(
@@ -328,7 +333,7 @@ def run_ortho(
             }
         )
     if agl_max_m is not None:
-        print(f"ortho: skipped {n_skipped}/{len(images)} frames with agl > {agl_max_m} m")
+        print(f"ortho: skipped {n_skipped}/{n_frames} frames with agl > {agl_max_m} m")
 
     _save_mosaic(out_dir, acc, wgt, e_min, n_max, gsd, stats)
     return {"frames": stats}

@@ -7,9 +7,12 @@ without any ROS2 install (bag reading is pure-Python via `rosbags`).
 Pipeline (`orthoproto run --config <capture.yaml>`, or step by step with
 `align` / `dsm` / `ortho`):
 
-1. **align** — fits a piecewise-rigid `camera_init -> UTM` transform by
-   windowed Kabsch alignment between FAST-LIVO2 odometry and the RTK ground
-   truth (`align.py`).
+1. **align** — fits a `camera_init -> UTM` transform. Default is a global
+   pose-graph (`align_pose_graph`, `align.method: pose_graph`): levels the
+   odometry frame (fixes Z/tilt drift), then jointly fits a slowly drifting
+   heading + translation with a *global scale* and a Huber robust loss on the
+   RTK fixes. The legacy independent windowed Kabsch fit (`align_windowed`,
+   `align.method: windowed`) is retained for comparison (`align.py`).
 2. **dsm** — accumulates `/cloud_registered` through that transform into a
    gridded height-above-ellipsoid surface (`dsm.py`).
 3. **ortho** — backward-projects each `/rgb_img` frame onto the DSM (falling
@@ -31,10 +34,10 @@ not code, per the project's "thresholds are config" rule.
   correctly labelled in a new capture without checking.
 - **RTK altitude is frozen/unreliable** (~1155.6 m constant through the
   capture — not a plausible ellipsoidal height for this region). Because of
-  this, `align_windowed` fits a *robust constant* altitude (the median RTK
-  altitude across the whole capture) as every window's Z target rather than
-  each point's own reported altitude — the horizontal (E/N) fit is what's
-  trusted from RTK. The resulting absolute Z is deliberately wrong until
+  this, both `align_windowed` and `align_pose_graph` fit a *robust constant*
+  altitude (the median RTK altitude across the whole capture) as the Z target
+  rather than each point's own reported altitude — the horizontal (E/N) fit is
+  what's trusted from RTK. The resulting absolute Z is deliberately wrong until
   `dsm.anchor_to_dem` shifts the whole DSM (and the alignment series, via
   `TransformSeries.shift_z`) to match the geopack's Copernicus DEM instead.
   Config: `dsm.z_datum: dem` (recommended for this capture) vs `rtk`.
@@ -44,6 +47,16 @@ not code, per the project's "thresholds are config" rule.
   version had a `p[:, 2] > -500.0` sanity floor here that silently dropped
   100% of points for this reason (fixed 2026-08-26; see `test_dsm.py`'s
   `test_plane_dsm_survives_negative_utm_z` regression test).
+- **The replayed FAST-LIVO2 odometry under-measures distance by ~22%.** The
+  odometry's own ground speed reads ~11.7 m/s while the RTK track advances at
+  ~14.1 m/s (verified directly on `/aft_mapped_to_init` vs `/rtk_position`,
+  and by fitting: a rigid per-window Kabsch fit leaves a ~7-9 m residual that
+  a *similarity* fit collapses to ~0.16 m on the straight legs). This is why
+  the pose-graph alignment estimates a `scale` (~1.227 for this capture)
+  instead of a rigid SE(3): without it, even a perfect rigid fit is wrong by
+  metres. The scale is stored on `TransformSeries.scale` and applied in
+  `apply()` (both positions and lidar clouds share the same camera_init
+  frame).
 - **`/rgb_img` is `bgr8`**, not `rgb8`. `bagio.decode_image_rgb` converts it
   once at read time so everything downstream (patches, mosaic, any future
   colour-based matching against the RGB satellite basemap) is RGB.
@@ -95,40 +108,36 @@ not code, per the project's "thresholds are config" rule.
 
 ## Known open items (not yet fixed)
 
-- Windowed RTK alignment residuals on the real capture run ~7-9 m mean
-  (up to ~17 m max) — plausibly genuine RTK/GPS quality in this segment
-  (fix status wasn't captured alongside `rtk_position`), but `fit_rigid3`
-  is a plain least-squares Kabsch fit with no outlier rejection, so a
-  RANSAC/IRLS pass is worth trying before trusting this as ground truth for
-  T09 bias measurement.
+- Windowed RTK alignment residuals on the real capture used to run ~7-9 m mean
+  (up to ~17 m max). This was **not** primarily RTK noise: it was the
+  odometry's ~22% scale error (see "Data quirks" above) that a rigid fit
+  cannot absorb. The pose-graph alignment estimates that scale, dropping the
+  mean horizontal residual to ~0.8 m on this capture (max ~5 m, concentrated
+  on the short, distorted turn and the post-turn return leg where the
+  odometry scale drifts slightly — the pose-graph still uses a *single global*
+  scale, so a residual few metres remain there). Genuine RTK fix quality
+  (fix status was never captured) is still worth measuring separately for T09.
 - The first ~30% of a capture's clouds/frames (before the first alignment
   window's centre) get the *nearest* window's transform rather than a real
   local fit (`TransformSeries.at` clamps, it doesn't extrapolate) — honest
   but lower-quality at the leading edge of a capture.
 - **`ortho_mosaic.tif` was smeared for this capture** (first noticed
   2026-08-26, after the first four bugs above were fixed): `run_ortho`'s
-  computed AGL climbs from a sane ~68 m at the start of the capture to
-  387 m by the end (`ortho_stats.yaml`; 204/396 frames > 150 m AGL) --
-  odometry Z-drift during the capture's 180-degree turn (see `align.py`'s
-  own docstring), which the constant-per-window RTK-altitude target in
-  `align_windowed` doesn't correct. **Mitigation added 2026-08-27**:
-  `ortho.agl_max_m` (100 m in `configs/orthoproto/geoloc_capture_01.yaml`)
-  skips any frame whose computed AGL exceeds it *before* the expensive
-  ray-marching, both dropping the bad poses from the mosaic and cutting
-  render time (275/396 frames skipped on this capture, runtime ~23 min
-  instead of ~75). Confirmed this filter alone does not fully explain the
-  smear -- even sane-AGL frames were torn until the `run_ortho` Rcl fix
-  above landed the same day. With both fixes, `mean lidar coverage` on
-  this capture went 0.0% -> 0.5% (Rcl fix only) -> 8.6% (Rcl fix + AGL
-  filter together), and the mosaic now has one clearly sharp, correctly
-  textured region (real buildings, trees, a dirt road) plus a residual
-  smeared band. That remaining band lines up with the already-documented
-  ~7-9 m windowed RTK alignment residual above, not a new bug: `fit_rigid3`
-  has no outlier rejection, so where the outbound and return legs of the
-  180-degree turn overlap in the mosaic, each pass's few-metre position
-  error shows up as double-vision blending. Properly fixing that is
-  T09/T17 territory (bias measurement, a more robust or globally
-  pose-graph-optimized alignment instead of independent windowed fits);
-  the AGL filter here was a cheap, targeted mitigation for one specific
-  symptom (implausible altitude), not a fix for the underlying alignment
-  noise.
+  computed AGL climbed from a sane ~68 m at the start of the capture to
+  387 m by the end (`ortho_stats.yaml`; 204/396 frames > 150 m AGL). Root
+  cause was the odometry frame's tilt + Z drift through the capture's
+  180-degree turn (see `align.py`'s own docstring), which the constant
+  per-window RTK-altitude target in `align_windowed` didn't correct.
+  **Fixed 2026-08-27** by the pose-graph alignment: leveling the odometry
+  frame (via `pca_up_axis` + `orient_up_from_cloud`, exactly as before) plus
+  the joint global fit brings the computed AGL to ~63-97 m (mean ~81 m,
+  matching AMtown.kml's ~80 m) with **0 frames** over `agl_max_m` — the
+  `agl_max_m` filter is now a safety net, not the thing keeping the mosaic
+  from tearing. The earlier cheap mitigation (`ortho.agl_max_m` = 100 m) is
+  still in the config but no longer skips any frame.
+- The odometry's turn is *reflected* relative to the RTK track (the LIO turns
+  in the opposite rotational sense through the 180-degree return), so the
+  pose-graph's heading sweeps ~360 degrees through the turn to map it. This
+  is correct for the *positions* (residual ~0.8 m) but means the alignment
+  rotation is not physically meaningful during the ~10 s turn apex; frames
+  there are lower-confidence by construction.

@@ -18,8 +18,21 @@ rtk:
   swap_latlon: true
 
 align: # T14/T15 step 1: camera_init -> UTM37N via RTK anchor
+  # method: "pose_graph" (global pose-graph + leveling + scale, default) or
+  # "windowed" (legacy independent windowed Kabsch fits, kept for comparison).
+  # The replayed FAST-LIVO2 odometry under-measures distance by ~22%; the
+  # pose-graph estimates that scale (1.227 for this capture) which the rigid
+  # windowed fit cannot (see tools/orthoproto/README.md "Known open items").
+  method: pose_graph
+  # -- pose_graph params --
+  step_s: 2.0          # inter-keyframe node spacing, seconds
+  rtk_weight: 1.0      # absolute RTK-constraint weight (E/N only)
+  smooth_weight: 0.5   # heading-smoothness prior weight
+  rtk_huber_m: 2.0     # Huber robust-loss threshold on RTK residual, metres
+  max_iter: 200
+  # -- windowed (legacy) params --
   window_s: 12.0
-  step_s: 4.0
+  window_step_s: 4.0
   min_pairs: 8
 
 camera: # camera_MARS_LVIG_AM.yaml @ scale 0.25 (the /rgb_img VIO image size)
@@ -59,11 +72,10 @@ ortho: # T15
   patch_radius_m: 130.0
   ray_steps: 48
   agl_floor_m: 30.0
-  # Real flight AGL is ~80 m (AMtown.kml). FAST-LIVO2 odometry Z drifts
-  # heavily through this capture's 180-degree turn (up to 387 m computed
-  # AGL for ~52% of frames) -- skip frames past a physically-plausible
-  # ceiling instead of blending a wrong pose into the mosaic. See
-  # tools/orthoproto/README.md "Known open items".
+  # Real flight AGL is ~80 m (AMtown.kml). The pose-graph alignment's
+  # leveling fixes the FAST-LIVO2 Z drift through the 180-degree turn, so
+  # computed AGL now stays ~63-97 m (0 frames exceed this ceiling). Keep the
+  # ceiling as a safety net against any remaining bad pose.
   agl_max_m: 100.0
   patch_every_n: 40
   aa_blur_passes: 2
