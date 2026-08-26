@@ -4,6 +4,8 @@ log/
 __pycache__/
 *.pyc
 *.egg-info/
+.pytest_cache/
+.ruff_cache/
 
 # Never in git: datasets, map packages, models, logs. They live on the NAS /
 # NVMe and are referenced by path from the mission config.

@@ -1,0 +1,55 @@
+# Offline true-ortho prototype config for geoloc_capture_01
+# (Maykop corridor, MARS-LVIG rig replayed through the FAST-LIVO2 port).
+#
+# Data quirks of this capture, recorded here because they are config, not code:
+#   - rtk.swap_latlon: the DJI RTK topic stores lat/lon in swapped fields;
+#   - rtk altitude is unreliable (frozen at ~1155.6 m); dsm.z_datum=dem shifts
+#     the DSM onto the geopack DEM ellipsoid instead;
+#   - camera: FAST-LIVO2 config camera_MARS_LVIG_AM.yaml, scale 0.25 -> the
+#     /rgb_img VIO size; images are raw (undistorted only in the math);
+#   - ortho.img_time_offset_s: VIO image time offset from the same config.
+
+bag_dir: "data/captures/geoloc_capture_01"
+geopack_dir: "data/missions/maykop-corridor-2026-08.geopack"
+out_dir: "data/outputs/geoloc_capture_01_ortho"
+crs: "EPSG:32637"
+
+rtk:
+  swap_latlon: true
+
+align: # T14/T15 step 1: camera_init -> UTM37N via RTK anchor
+  window_s: 12.0
+  step_s: 4.0
+  min_pairs: 8
+
+camera: # camera_MARS_LVIG_AM.yaml @ scale 0.25 (the /rgb_img VIO image size)
+  width: 2448
+  height: 2048
+  scale: 0.25
+  fx: 1453.88
+  fy: 1452.85
+  cx: 1182.53
+  cy: 1045.82
+  d0: -0.052
+  d1: 0.1168
+  d2: 0.0015
+  d3: 0.00013
+
+dsm: # T14
+  dsm_gsd_m: 0.5
+  margin_m: 150.0
+  range_max_m: 190.0
+  median_win: 5
+  outlier_threshold_m: 3.0
+  dense_min_points: 4
+  sparse_min_points: 1
+  z_datum: dem # "dem" (recommended for this capture) or "rtk"
+
+ortho: # T15
+  patch_gsd_m: 0.5
+  patch_radius_m: 130.0
+  ray_steps: 48
+  agl_floor_m: 30.0
+  patch_every_n: 40
+  aa_blur_passes: 2
+  img_time_offset_s: -0.1
