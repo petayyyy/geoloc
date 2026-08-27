@@ -156,7 +156,9 @@ def _cmd_ortho(cfg: dict) -> int:
     cap = Capture(Path(cfg["bag_dir"]))
     out = Path(cfg["out_dir"])
     align = AlignmentResult.load(out / "align_final.yaml")
-    dsm = DsmGrid.load(out / "dsm.yaml", out / "dsm.tif", out / "dsm_confidence.tif")
+    dsm = DsmGrid.load(
+        out / "dsm.yaml", out / "dsm.tif", out / "dsm_confidence.tif", cfg["crs"]
+    )
     dem = DemField.open(Path(cfg["geopack_dir"]) / "dem.tif")
     cam = Pinhole.from_config(cfg["camera"], float(cfg["camera"].get("scale", 1.0)))
     odom = cap.read_odom()

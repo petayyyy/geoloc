@@ -1,6 +1,7 @@
 """ortho.py tests: flat-scene nadir warp reproduces the ground truth (T15-U-02)."""
 
 import numpy as np
+import pytest
 import rasterio.transform
 
 from orthoproto.align import AlignmentResult, TransformSeries
@@ -325,3 +326,54 @@ def test_written_rasters_carry_the_configured_crs(tmp_path):
     for path in written:
         with rasterio.open(path) as ds:
             assert ds.crs.to_string() == "EPSG:32638", f"{path.name} carries {ds.crs}"
+
+
+# --- geometric quality of a patch pixel (2026-08-28) -----------------------
+#
+# The confidence layer only recorded WHICH terrain source a pixel's height
+# came from (255 lidar / 64 DEM / 0 empty) -- a three-valued flag, verified on
+# the real patches. So a ray grazing the ground, smearing one camera pixel
+# into a long "comet" streak, scored exactly as well as a near-nadir one, and
+# nothing downstream could gate on it. sample_density measures the thing that
+# actually differs: camera pixels backing one ortho pixel.
+
+from orthoproto.ortho import sample_density  # noqa: E402
+
+
+def _uv_field(h, w, scale_u, scale_v):
+    cols, rows = np.meshgrid(np.arange(w, dtype=float), np.arange(h, dtype=float))
+    return np.stack([cols * scale_u, rows * scale_v], axis=2)
+
+
+def test_one_to_one_mapping_has_unit_density():
+    d = sample_density(_uv_field(8, 8, 1.0, 1.0))
+    assert np.allclose(d, 1.0)
+
+
+def test_smear_shows_up_as_low_density():
+    """One camera pixel stretched across ten ortho pixels -> 0.1, not 1.0."""
+    d = sample_density(_uv_field(8, 8, 0.1, 0.1))
+    assert np.allclose(d, 0.1)
+
+
+def test_anisotropic_smear_is_the_geometric_mean():
+    # sharp across, smeared along: sqrt(1.0 * 0.04) = 0.2
+    d = sample_density(_uv_field(8, 8, 1.0, 0.04))
+    assert np.allclose(d, 0.2)
+
+
+def test_downsampling_the_camera_scores_above_one():
+    d = sample_density(_uv_field(8, 8, 3.0, 3.0))
+    assert np.allclose(d, 3.0)
+
+
+def test_missed_rays_score_zero_not_a_guess():
+    uv = _uv_field(8, 8, 1.0, 1.0)
+    uv[3, 3] = np.nan
+    d = sample_density(uv)
+    assert d[3, 3] == 0.0
+
+
+def test_shape_is_validated():
+    with pytest.raises(ValueError, match=r"expects \(h, w, 2\)"):
+        sample_density(np.zeros((8, 8)))

@@ -1,9 +1,11 @@
 """dsm.py tests: plane rasterization (T14-U-01), outlier filter (T14-U-02)."""
 
 import numpy as np
+import pytest
+import yaml
 
 from orthoproto.align import TransformSeries
-from orthoproto.dsm import NODATA, build_dsm
+from orthoproto.dsm import NODATA, DsmGrid, build_dsm
 
 CFG = {
     "dsm_gsd_m": 0.5,
@@ -106,3 +108,58 @@ def test_holes_are_nodata():
     assert holes.sum() > 0
     assert (dsm.z[holes] == NODATA).all()
     assert (dsm.confidence[holes] == 0).all()
+
+
+# --- frame bookkeeping (regression, 2026-08-28) ----------------------------
+#
+# dsm.yaml used to record east_min/north_max/gsd and no CRS at all -- bare
+# numbers with no frame. While the mission CRS was still hardcoded in the
+# source, that let a dsm.tif tagged EPSG:32637 sit next to patches in
+# EPSG:32638 with nothing in data/outputs/ able to notice.
+
+
+def _tiny_grid():
+    return DsmGrid(
+        gsd=1.0,
+        east_min=485000.0,
+        north_max=4419000.0,
+        width=4,
+        height=4,
+        z=np.zeros((4, 4), dtype=np.float32),
+        count=np.ones((4, 4), dtype=np.uint32),
+        dispersion=np.zeros((4, 4), dtype=np.float32),
+        confidence=np.full((4, 4), 200, dtype=np.uint8),
+    )
+
+
+def test_dsm_sidecar_records_the_crs(tmp_path):
+    _tiny_grid().save(
+        tmp_path / "dsm.yaml", tmp_path / "dsm.tif", tmp_path / "conf.tif", "EPSG:32638"
+    )
+    with open(tmp_path / "dsm.yaml", encoding="utf-8") as f:
+        assert yaml.safe_load(f)["crs"] == "EPSG:32638"
+    loaded = DsmGrid.load(
+        tmp_path / "dsm.yaml", tmp_path / "dsm.tif", tmp_path / "conf.tif", "EPSG:32638"
+    )
+    assert loaded.width == 4
+
+
+def test_dsm_in_the_wrong_zone_is_refused(tmp_path):
+    """The exact silent failure: a zone-37 DSM used by a zone-38 capture."""
+    _tiny_grid().save(
+        tmp_path / "dsm.yaml", tmp_path / "dsm.tif", tmp_path / "conf.tif", "EPSG:32637"
+    )
+    with pytest.raises(ValueError, match="EPSG:32637.*config says EPSG:32638"):
+        DsmGrid.load(
+            tmp_path / "dsm.yaml", tmp_path / "dsm.tif", tmp_path / "conf.tif", "EPSG:32638"
+        )
+
+
+def test_sidecar_and_raster_must_agree(tmp_path):
+    _tiny_grid().save(
+        tmp_path / "dsm.yaml", tmp_path / "dsm.tif", tmp_path / "conf.tif", "EPSG:32638"
+    )
+    text = (tmp_path / "dsm.yaml").read_text(encoding="utf-8")
+    (tmp_path / "dsm.yaml").write_text(text.replace("32638", "32637"), encoding="utf-8")
+    with pytest.raises(ValueError, match="dsm.yaml says"):
+        DsmGrid.load(tmp_path / "dsm.yaml", tmp_path / "dsm.tif", tmp_path / "conf.tif")

@@ -132,6 +132,34 @@ def box_blur(img: np.ndarray, passes: int) -> np.ndarray:
     return out
 
 
+def _ratio(flag: np.ndarray, mask: np.ndarray) -> float:
+    """Fraction of the usable pixels where `flag` holds; 0.0 if none are usable."""
+    return float(np.mean(flag[mask])) if mask.any() else 0.0
+
+
+def sample_density(uv: np.ndarray) -> np.ndarray:
+    """Linear camera pixels backing one ortho pixel, per pixel of the grid.
+
+    `uv` is the (h, w, 2) field of source-image coordinates each ortho pixel
+    samples from. The Jacobian determinant of that map is the camera-pixel
+    *area* one ortho pixel draws on; its square root is the linear figure, so
+    1.0 means "one camera pixel per ortho pixel" and 0.1 means a single camera
+    pixel is stretched across ten -- the ray-marching smear.
+
+    Central differences inside, one-sided at the border; non-finite entries
+    (rays that missed) give 0.0 rather than a guess.
+    """
+    uv = np.asarray(uv, dtype=np.float64)
+    if uv.ndim != 3 or uv.shape[2] != 2:
+        raise ValueError(f"sample_density expects (h, w, 2), got {uv.shape}")
+    safe = np.where(np.isfinite(uv), uv, 0.0)
+    du_dc, du_dr = np.gradient(safe[:, :, 0], axis=1), np.gradient(safe[:, :, 0], axis=0)
+    dv_dc, dv_dr = np.gradient(safe[:, :, 1], axis=1), np.gradient(safe[:, :, 1], axis=0)
+    det = np.abs(du_dc * dv_dr - dv_dc * du_dr)
+    density = np.sqrt(det)
+    return np.where(np.isfinite(uv).all(axis=2), density, 0.0)
+
+
 def warp_frame(
     img: np.ndarray,
     cam: Pinhole,
@@ -146,6 +174,7 @@ def warp_frame(
     radius = float(cfg.get("patch_radius_m", 130.0))
     agl_floor = float(cfg.get("agl_floor_m", 30.0))
     steps = int(cfg.get("ray_steps", 48))
+    min_sample_density = float(cfg.get("min_sample_density", 0.0))
 
     n = int(round(2 * radius / gsd))
     east = C[0] + (np.arange(n) - n / 2 + 0.5) * gsd
@@ -213,8 +242,23 @@ def warp_frame(
     conf = np.zeros(len(p_final), dtype=np.float64)
     conf[usable] = 255.0 * lidar_final[usable] + 64.0 * (1.0 - lidar_final[usable])
 
+    # Geometric quality, independent of where the height came from. The base
+    # confidence above only says *which terrain source* was used (255 lidar,
+    # 64 DEM), so a ray that grazes the ground -- smearing one camera pixel
+    # across a long streak of ortho pixels -- scores exactly as well as a
+    # near-nadir one. That is what puts the "comet" streaks in the patch
+    # periphery at full confidence, and it makes the confidence layer useless
+    # as a gate for matching. `sample_density` measures the actual thing:
+    # linear camera pixels backing one ortho pixel, from the Jacobian of the
+    # ortho->image map. Below 1.0 the ortho is upsampled from a single camera
+    # pixel and carries no independent information.
+    density = sample_density(uv.reshape(h, w, 2))
+    if min_sample_density > 0.0:
+        conf = conf.reshape(h, w) * np.clip(density / min_sample_density, 0.0, 1.0)
+    else:
+        conf = conf.reshape(h, w)
+
     rgb = rgb.reshape(h, w, 3)
-    conf = conf.reshape(h, w)
     return {
         "rgb": rgb,
         "confidence": conf,
@@ -224,7 +268,11 @@ def warp_frame(
         "north_max": float(north[0] + gsd / 2),
         "gsd": gsd,
         "agl": agl,
-        "lidar_coverage_ratio": float(np.mean(conf >= 128)),
+        # Terrain-source coverage, deliberately measured before the geometric
+        # term so the two stay separable: this stays "how much of the patch
+        # had lidar under it", not "how much was also well-sampled".
+        "lidar_coverage_ratio": _ratio(lidar_final.reshape(h, w) > 0.5, usable.reshape(h, w)),
+        "sample_density_ratio": _ratio(density >= 1.0, usable.reshape(h, w)),
     }
 
 

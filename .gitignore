@@ -18,3 +18,8 @@ data/
 *.pt
 runs/
 artifacts/
+
+# Locally built metrics helpers (tools/metrics/t19/t19_match and friends):
+# native binaries produced next to their sources, never artifacts to commit.
+tools/metrics/*/t19_match
+tools/metrics/**/*.exe

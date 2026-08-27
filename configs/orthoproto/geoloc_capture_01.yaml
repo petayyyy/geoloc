@@ -115,6 +115,14 @@ ortho: # T15
   # all; after it, the track's true vertical extent over the capture is 0.63 m.
   # Keep the ceiling as a safety net against a bad pose.
   agl_max_m: 100.0
+  # Camera pixels backing one ortho pixel, below which confidence is scaled
+  # down proportionally. The base confidence only says which terrain source a
+  # height came from (lidar vs DEM), so without this a ray grazing the ground
+  # -- the "comet" smear in the patch periphery -- reports the same
+  # confidence as a near-nadir one, and the matcher has no way to gate on it.
+  # 0 disables the term (previous behaviour). 1.0 = "demand at least one
+  # camera pixel of real information per ortho pixel".
+  min_sample_density: 1.0
   patch_every_n: 40
   aa_blur_passes: 2
   # 0.0 for the raw camera topic: its header stamp IS the capture time, per

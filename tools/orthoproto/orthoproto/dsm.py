@@ -66,6 +66,13 @@ class DsmGrid:
             dst.write(self.confidence, 1)
         meta = {
             "format": "orthoproto-dsm-v1",
+            # Recorded so `load` can cross-check it against the raster's own
+            # tag. The sidecar used to carry only east_min/north_max/gsd --
+            # bare numbers with no frame -- so when the mission CRS was still
+            # hardcoded (see the git history for EPSG:32637), a dsm.tif
+            # labelled zone 37 next to patches in zone 38 was invisible to
+            # everything in data/outputs/.
+            "crs": crs,
             "gsd": self.gsd,
             "east_min": self.east_min,
             "north_max": self.north_max,
@@ -77,11 +84,31 @@ class DsmGrid:
             yaml.safe_dump(meta, f, sort_keys=False)
 
     @classmethod
-    def load(cls, path: Path, z_path: Path, conf_path: Path) -> DsmGrid:
+    def load(cls, path: Path, z_path: Path, conf_path: Path, crs: str | None = None) -> DsmGrid:
+        """Load a DSM, refusing one whose frame disagrees with what it says.
+
+        `crs`, when given (the mission CRS from the capture config), is checked
+        against both the sidecar and the raster's own tag. Silence here is how
+        a zone-37 dsm.tif sat next to zone-38 patches unnoticed.
+        """
         with open(path, encoding="utf-8") as f:
             meta = yaml.safe_load(f)
         with rasterio.open(z_path) as src:
             z = src.read(1).astype(np.float32)
+            raster_crs = src.crs.to_string() if src.crs else None
+        stated = meta.get("crs")
+        for name, found in (("dsm.yaml", stated), (z_path.name, raster_crs)):
+            if crs is not None and found is not None and found != crs:
+                raise ValueError(
+                    f"{name} is in {found} but the capture config says {crs}. "
+                    "Regenerate the DSM rather than reinterpreting it -- the "
+                    "coordinates inside were computed in one frame or the other, "
+                    "and nothing here can tell which."
+                )
+        if stated is not None and raster_crs is not None and stated != raster_crs:
+            raise ValueError(
+                f"dsm.yaml says {stated} but {z_path.name} is tagged {raster_crs}"
+            )
         with rasterio.open(conf_path) as src:
             conf = src.read(1).astype(np.uint8)
         count = np.zeros_like(conf, dtype=np.uint32)
