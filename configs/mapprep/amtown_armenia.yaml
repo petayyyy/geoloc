@@ -61,14 +61,24 @@ mosaic:
 # reports 1155.6 m at 80 m AGL); the Maykop geopack's DEM reads 143-159 m,
 # which is one of the ways the wrong-site geopack was caught.
 dem:
-  source: copernicus_glo30
-  # Copernicus GLO-30's PUBLIC release excludes several countries, Armenia
-  # among them: for N39 the 30 m bucket stops at E043 and this corridor needs
-  # E044, so the primary source 404s here. GLO-90 (3-arcsec) does carry the
-  # tile. The fallback is opt-in per corridor and never silent -- the manifest
-  # records `source: copernicus_glo90` and the measured native_gsd (~90 m).
-  # Acceptable because the DEM is only the filler outside lidar coverage; the
-  # lidar DSM carries the detail.
+  # Copernicus GLO-30's PUBLIC S3 release excludes several countries, Armenia
+  # among them: for N39 the open 30 m bucket stops at E043 and this corridor
+  # needs E044. OpenTopography redistributes the same GLO-30 data with full
+  # coverage under its own agreement, behind a free API key -- 30.9 m native
+  # here, 1027-1269 m over this bbox.
+  #
+  # The key is read from the environment, never stored in the repo or the
+  # geopack. Before building:
+  #     export OPENTOPOGRAPHY_API_KEY=<your key from portal.opentopography.org>
+  # (PowerShell: $env:OPENTOPOGRAPHY_API_KEY = "<key>")
+  # A missing key fails the build loudly rather than quietly coarsening it.
+  source: opentopography_cop30
+  api_key_env: OPENTOPOGRAPHY_API_KEY
+  bbox_margin_deg: 0.01
+  # Keyless 90 m escape hatch, used only if OpenTopography reports no coverage
+  # for this bbox (never on a rejected key or a network error). Whichever
+  # product actually supplies the data is named in the manifest along with the
+  # measured native_gsd.
   fallback_sources: [copernicus_glo90]
   target_gsd_m: 10
   geoid_model: egm2008       # EGM2008 grid from the PROJ CDN, cached on disk

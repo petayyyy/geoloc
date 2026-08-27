@@ -117,6 +117,8 @@ def _build(args: argparse.Namespace) -> int:
             offline=args.offline,
             source_id=dem_cfg.get("source", DEFAULT_DEM_SOURCE),
             fallback_source_ids=tuple(dem_cfg.get("fallback_sources", ())),
+            api_key_env=dem_cfg.get("api_key_env", ""),
+            bbox_margin_deg=float(dem_cfg.get("bbox_margin_deg", 0.01)),
         )
         used = sorted({source_id_of_tile(p.name) for p in source_paths})
         print(

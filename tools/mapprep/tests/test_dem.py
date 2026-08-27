@@ -7,8 +7,11 @@ import pytest
 from mapprep.dem import (
     GLO30_BUCKET,
     GLO90_BUCKET,
+    OPENTOPO_URL,
     DemFetchError,
+    dem_source,
     fetch_dem_tiles,
+    opentopography_tile_name,
     source_id_of_tile,
     tile_names_for,
 )
@@ -176,3 +179,132 @@ def test_cached_fallback_tile_is_reused_without_network(cache_root, monkeypatch)
         fallback_source_ids=("copernicus_glo90",),
     )
     assert paths == [cache_root / GLO90_TILE]
+
+
+# --- OpenTopography COP30 source -------------------------------------------
+#
+# Same GLO-30 data, full coverage (the open S3 bucket omits whole countries),
+# behind a free API key. The key lives in an environment variable named by the
+# corridor config and must never reach a cache filename, a log line or a
+# traceback.
+
+OT_KEY_ENV = "TEST_OPENTOPO_KEY"
+OT_TILE = opentopography_tile_name(dem_source("opentopography_cop30"), AMTOWN_BOUNDS)
+
+
+def _fake_opentopo(monkeypatch, handler):
+    log = []
+
+    def fake_urlopen(request, timeout=300):
+        log.append(request.full_url)
+        return handler(request)
+
+    monkeypatch.setattr("mapprep.dem.urllib.request.urlopen", fake_urlopen)
+    return log
+
+
+def test_opentopography_cache_name_carries_the_bbox_not_the_key():
+    assert OT_TILE.startswith("OpenTopography_COP30_")
+    assert OT_TILE.endswith("_DEM.tif")
+    # bbox with the default 0.01 deg margin, rounded -- deterministic
+    assert "S39.9080_N39.9365_W44.8115_E44.8455" in OT_TILE
+    assert source_id_of_tile(OT_TILE) == "opentopography_cop30"
+
+
+def test_opentopography_fetch_sends_the_key_and_caches_by_bbox(cache_root, monkeypatch):
+    monkeypatch.setenv(OT_KEY_ENV, "secret-key-value")
+    log = _fake_opentopo(monkeypatch, lambda request: _FakeResponse())
+
+    paths = fetch_dem_tiles(
+        AMTOWN_BOUNDS,
+        cache_dir=cache_root,
+        source_id="opentopography_cop30",
+        api_key_env=OT_KEY_ENV,
+    )
+
+    assert len(log) == 1
+    assert log[0].startswith(OPENTOPO_URL)
+    assert "demtype=COP30" in log[0]
+    assert "API_Key=secret-key-value" in log[0]
+    assert paths == [cache_root / OT_TILE]
+    assert "secret-key-value" not in paths[0].name
+
+
+def test_missing_api_key_env_fails_loudly_instead_of_coarsening(cache_root, monkeypatch):
+    """A missing key must not silently drop the build to 90 m data."""
+    monkeypatch.delenv(OT_KEY_ENV, raising=False)
+    with pytest.raises(DemFetchError, match=f"{OT_KEY_ENV} is unset"):
+        fetch_dem_tiles(
+            AMTOWN_BOUNDS,
+            cache_dir=cache_root,
+            source_id="opentopography_cop30",
+            fallback_source_ids=("copernicus_glo90",),
+            api_key_env=OT_KEY_ENV,
+        )
+
+
+def test_unconfigured_api_key_env_names_the_config_key(cache_root, monkeypatch):
+    with pytest.raises(DemFetchError, match="dem.api_key_env"):
+        fetch_dem_tiles(
+            AMTOWN_BOUNDS, cache_dir=cache_root, source_id="opentopography_cop30"
+        )
+
+
+def test_rejected_api_key_is_a_hard_error_not_a_fallback(cache_root, monkeypatch):
+    monkeypatch.setenv(OT_KEY_ENV, "bad-key")
+
+    def handler(request):
+        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+
+    _fake_opentopo(monkeypatch, handler)
+    with pytest.raises(DemFetchError, match="rejected the API key"):
+        fetch_dem_tiles(
+            AMTOWN_BOUNDS,
+            cache_dir=cache_root,
+            source_id="opentopography_cop30",
+            fallback_source_ids=("copernicus_glo90",),
+            api_key_env=OT_KEY_ENV,
+        )
+
+
+def test_api_key_is_redacted_from_error_messages(cache_root, monkeypatch):
+    monkeypatch.setenv(OT_KEY_ENV, "super-secret")
+
+    def handler(request):
+        raise urllib.error.HTTPError(request.full_url, 500, "boom", {}, None)
+
+    _fake_opentopo(monkeypatch, handler)
+    with pytest.raises(DemFetchError) as excinfo:
+        fetch_dem_tiles(
+            AMTOWN_BOUNDS,
+            cache_dir=cache_root,
+            source_id="opentopography_cop30",
+            api_key_env=OT_KEY_ENV,
+        )
+    message = str(excinfo.value)
+    assert "super-secret" not in message
+    assert "<redacted>" in message
+
+
+def test_opentopography_no_coverage_falls_through_to_glo90(cache_root, monkeypatch):
+    monkeypatch.setenv(OT_KEY_ENV, "key")
+    calls = []
+
+    def fake_urlopen(request, timeout=300):
+        calls.append(request.full_url)
+        if request.full_url.startswith(OPENTOPO_URL):
+            raise urllib.error.HTTPError(request.full_url, 204, "No Content", {}, None)
+        return _FakeResponse()
+
+    monkeypatch.setattr("mapprep.dem.urllib.request.urlopen", fake_urlopen)
+
+    paths = fetch_dem_tiles(
+        AMTOWN_BOUNDS,
+        cache_dir=cache_root,
+        source_id="opentopography_cop30",
+        fallback_source_ids=("copernicus_glo90",),
+        api_key_env=OT_KEY_ENV,
+    )
+
+    assert paths == [cache_root / GLO90_TILE]
+    assert len(calls) == 2
