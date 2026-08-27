@@ -10,6 +10,7 @@ fetch + grid + COG plumbing so the whole geopack builds from one command.
 
 from __future__ import annotations
 
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +25,20 @@ from .georef import PixelGrid
 from .osm import rasterize_overpass
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+# Public Overpass instances, tried in order. The main one runs a small fixed
+# pool of query slots and answers "504 Gateway Timeout" (not 429) the moment
+# they are all busy -- a transient load signal, not a bad query, and the
+# reason a geopack build could die after both ortho layers were already built.
+OVERPASS_URLS = (
+    OVERPASS_URL,
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+)
+
+# Server-side conditions worth another attempt. 400 is NOT here on purpose:
+# that means the query itself is malformed, and retrying just wastes slots.
+OVERPASS_RETRY_CODES = frozenset({429, 500, 502, 503, 504})
 
 USER_AGENT = "geoloc-mapprep/0.1 (internal dev)"
 
@@ -68,14 +83,51 @@ def overpass_query(bounds_wgs84: dict) -> str:
     )
 
 
-def fetch_overpass(bounds_wgs84: dict, timeout_s: float = 90.0) -> str:
+def fetch_overpass(
+    bounds_wgs84: dict,
+    timeout_s: float = 90.0,
+    urls: tuple[str, ...] = OVERPASS_URLS,
+    attempts: int = 4,
+    backoff_s: float = 5.0,
+    sleep=time.sleep,
+) -> str:
+    """POST the corridor query to Overpass, rotating endpoints and retrying.
+
+    Overpass rejects with 504 whenever its query slots are all busy, so a
+    single-shot fetch fails for reasons that have nothing to do with the
+    corridor. Each attempt moves to the next endpoint in `urls` and waits
+    `backoff_s * attempt` seconds -- deterministic, no jitter, so tests are
+    reproducible.
+
+    A 400 aborts immediately: that is a malformed query, and no amount of
+    retrying fixes it (see `overpass_query`'s note about quoted bbox filters).
+    """
+    if not urls:
+        raise OsmFetchError("fetch_overpass: no Overpass endpoints configured")
     data = urllib.parse.urlencode({"data": overpass_query(bounds_wgs84)}).encode("utf-8")
-    request = urllib.request.Request(OVERPASS_URL, data=data, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:
-            return response.read().decode("utf-8")
-    except (urllib.error.URLError, OSError) as exc:
-        raise OsmFetchError(f"failed to query Overpass: {exc}") from exc
+    failures = []
+    for attempt in range(attempts):
+        url = urls[attempt % len(urls)]
+        request = urllib.request.Request(url, data=data, headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_s) as response:
+                return response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            if exc.code not in OVERPASS_RETRY_CODES:
+                raise OsmFetchError(f"failed to query Overpass at {url}: {exc}") from exc
+            failures.append(f"{url}: {exc}")
+        except (urllib.error.URLError, OSError) as exc:
+            failures.append(f"{url}: {exc}")
+        if attempt + 1 < attempts:
+            sleep(backoff_s * (attempt + 1))
+    joined = "; ".join(failures)
+    raise OsmFetchError(
+        f"failed to query Overpass after {attempts} attempt(s) [{joined}]. "
+        "These are load errors, not query errors -- the public instances "
+        "throttle hard. Re-run the build (tiles and DEM are cached, so it "
+        "resumes here), or raise semantic.overpass_attempts / "
+        "semantic.overpass_backoff_s in the corridor config."
+    )
 
 
 def build_semantic(
@@ -90,6 +142,10 @@ def build_semantic(
     road_half_width_m: float = 3.0,
     water_line_half_width_m: float = 2.0,
     overviews: tuple[int, ...] = (2, 4, 8),
+    overpass_urls: tuple[str, ...] = OVERPASS_URLS,
+    overpass_attempts: int = 4,
+    overpass_backoff_s: float = 5.0,
+    overpass_timeout_s: float = 90.0,
 ) -> SemanticResult:
     """Rasterize OSM semantics onto a 1-class uint8 grid and write a COG."""
     if overpass_text is None:
@@ -98,7 +154,13 @@ def build_semantic(
                 "OSM semantics require network or a pre-fetched fragment; pass "
                 "overpass_text or build with network access"
             )
-        overpass_text = fetch_overpass(bounds_wgs84)
+        overpass_text = fetch_overpass(
+            bounds_wgs84,
+            timeout_s=overpass_timeout_s,
+            urls=overpass_urls,
+            attempts=overpass_attempts,
+            backoff_s=overpass_backoff_s,
+        )
 
     to_utm = Transformer.from_crs("EPSG:4326", crs_epsg, always_xy=True)
     west, south, east, north = (

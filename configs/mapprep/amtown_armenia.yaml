@@ -82,6 +82,13 @@ semantic:
   gsd: 1.0
   road_half_width_m: 3.0
   water_line_half_width_m: 2.0
+  # Public Overpass instances answer 504 when their query slots are busy --
+  # a load signal, not a query error. Endpoints rotate per attempt and the
+  # backoff is linear (attempt x backoff_s). Raise these if the build keeps
+  # dying here; the corridor query itself answers in ~2 s on a free slot.
+  overpass_attempts: 4
+  overpass_backoff_s: 5.0
+  overpass_timeout_s: 90.0
 
 # Best-effort per-tile capture dates via the Esri World Imagery metadata
 # service. When unavailable the manifest records capture_date: null honestly.

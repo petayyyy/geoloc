@@ -23,7 +23,7 @@ from .manifest import (
 )
 from .mosaic import build_layer, select_zoom
 from .providers import get_provider
-from .semantic import build_semantic
+from .semantic import OVERPASS_URLS, build_semantic
 from .tilecache import import_cache
 from .validator import validate_package
 from .verify import (
@@ -148,6 +148,10 @@ def _build(args: argparse.Namespace) -> int:
             geopack_dir / "semantic.tif",
             config["crs"],
             offline=args.offline,
+            overpass_urls=tuple(sem_cfg.get("overpass_urls", OVERPASS_URLS)),
+            overpass_attempts=int(sem_cfg.get("overpass_attempts", 4)),
+            overpass_backoff_s=float(sem_cfg.get("overpass_backoff_s", 5.0)),
+            overpass_timeout_s=float(sem_cfg.get("overpass_timeout_s", 90.0)),
             extract_date=sem_cfg.get("extract_date"),
             road_half_width_m=sem_cfg.get("road_half_width_m", 3.0),
             water_line_half_width_m=sem_cfg.get("water_line_half_width_m", 2.0),
