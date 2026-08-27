@@ -147,7 +147,7 @@ def add_dem_layer(
     grid = result.grid
     layer = {
         "file": result.dem_path.name,
-        "source": "copernicus_glo30",
+        "source": "+".join(result.source_datasets) if result.source_datasets else "unknown",
         "gsd": result.target_gsd_m,
         "native_gsd": result.native_gsd_m,
         "crs": crs,
@@ -158,7 +158,8 @@ def add_dem_layer(
         "resampling": "bilinear",
         "georef_bias": dict(GEOREF_BIAS_PLACEHOLDER),
         "notes": (
-            f"GLO-30 DSM (buildings/vegetation included, not a DTM); {grid.width}x{grid.height} px "
+            f"Copernicus DSM (buildings/vegetation included, not a DTM) from "
+            f"{'+'.join(result.source_datasets) or 'unknown'}; {grid.width}x{grid.height} px "
             f"@ {result.target_gsd_m} m grid; native ~{result.native_gsd_m} m interpolated "
             f"to {result.target_gsd_m} m; vertical datum {result.source_datum} -> "
             f"{result.vertical_datum} via {result.geoid_model}; coverage "

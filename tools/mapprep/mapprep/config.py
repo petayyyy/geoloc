@@ -60,6 +60,21 @@ def _validate(config: dict[str, Any]) -> None:
             raise ConfigError(f"dem missing keys: {sorted(missing)}")
         if config["dem"]["target_gsd_m"] <= 0:
             raise ConfigError("dem.target_gsd_m must be > 0")
+        from .dem import DEM_SOURCES
+
+        for key in ("source",):
+            value = config["dem"].get(key)
+            if value is not None and value not in DEM_SOURCES:
+                raise ConfigError(f"dem.{key} must be one of {sorted(DEM_SOURCES)}, got {value!r}")
+        fallbacks = config["dem"].get("fallback_sources", [])
+        if not isinstance(fallbacks, list):
+            raise ConfigError("dem.fallback_sources must be a list")
+        for value in fallbacks:
+            if value not in DEM_SOURCES:
+                raise ConfigError(
+                    f"dem.fallback_sources entries must be one of {sorted(DEM_SOURCES)}, "
+                    f"got {value!r}"
+                )
     if "semantic" in config:
         missing = _REQUIRED_SEMANTIC - set(config["semantic"])
         if missing:

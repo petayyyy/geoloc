@@ -10,7 +10,7 @@ from . import dates as dates_mod
 from .classifier import class_fractions, classify
 from .config import cache_root as config_cache_root
 from .config import load_config, overviews
-from .dem import build_dem, fetch_dem_tiles
+from .dem import DEFAULT_DEM_SOURCE, build_dem, fetch_dem_tiles, source_id_of_tile
 from .fetch import force_ipv4
 from .geoid import GridGeoid, resolve_egm2008_grid
 from .manifest import (
@@ -115,10 +115,13 @@ def _build(args: argparse.Namespace) -> int:
             bounds_wgs84,
             _optional_path(config, ["dem", "cache_dir"]),
             offline=args.offline,
+            source_id=dem_cfg.get("source", DEFAULT_DEM_SOURCE),
+            fallback_source_ids=tuple(dem_cfg.get("fallback_sources", ())),
         )
+        used = sorted({source_id_of_tile(p.name) for p in source_paths})
         print(
-            f"[dem] {len(source_paths)} GLO-30 tile(s), geoid {geoid_path.name}, "
-            f"target gsd {dem_cfg['target_gsd_m']} m/px"
+            f"[dem] {len(source_paths)} tile(s) from {'+'.join(used)}, "
+            f"geoid {geoid_path.name}, target gsd {dem_cfg['target_gsd_m']} m/px"
         )
         dem_result = build_dem(
             bounds_wgs84,
