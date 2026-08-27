@@ -48,6 +48,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_phase_corr geoloc_matcher_core)
   ament_add_test(phase_corr COMMAND $<TARGET_FILE:test_phase_corr> TIMEOUT 120
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO)
+
+  # T17 SE(2) refinement tests. Dependency-free.
+  add_executable(test_se2_refine test/test_se2_refine.cpp)
+  target_link_libraries(test_se2_refine geoloc_matcher_core)
+  ament_add_test(se2_refine COMMAND $<TARGET_FILE:test_se2_refine> TIMEOUT 120
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO)
 endif()
 
 ament_package()

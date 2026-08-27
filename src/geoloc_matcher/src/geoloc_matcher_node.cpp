@@ -6,11 +6,12 @@
 // NOT RESPONSIBLE FOR: Deciding whether a fix is valid. NEVER add a 'this one
 // is obviously bad' shortcut here. That decision lives only in geoloc_integrity.
 //
-// This node currently runs the T19 fallback channel: log-polar phase
-// correlation on gradient orientation (CHANNEL_PHASE_CORR). The primary XFeat
-// channel and the arbitration strategy (primary -> fallback after N failed
-// frames) land with T16/T17. The channel always publishes a result with
-// quality metrics and never judges it.
+// This node currently runs the T19 fallback channel (log-polar phase
+// correlation on gradient orientation) refined by the T17 SE(2) dense
+// alignment, published as CHANNEL_PHASE_CORR. The primary XFeat channel and the
+// arbitration strategy (primary -> fallback after N failed frames) land with
+// T16/T17. The channel always publishes a result with quality metrics and never
+// judges it.
 //
 // Publishes:
 //   /geoloc/fix_raw        geoloc_msgs/SE2Fix   (channel = 1)  @ up to 2 Hz
@@ -30,6 +31,7 @@
 
 #include "geoloc_common/angles.hpp"
 #include "geoloc_matcher/phase_corr.hpp"
+#include "geoloc_matcher/se2_refine.hpp"
 
 using namespace std::chrono_literals;
 
@@ -62,6 +64,15 @@ class GeolocMatcherNode : public rclcpp::Node {
     declare_parameter<double>("yaw_sigma_deg", 1.5);
     declare_parameter<double>("basemap_bias_sigma_m", 3.0);
 
+    // T17 SE(2) refinement knobs (P0 rule 6: thresholds are CONFIGURATION).
+    declare_parameter<int>("refine_max_iterations", 30);
+    declare_parameter<double>("refine_trans_tol", 1e-2);
+    declare_parameter<double>("refine_rot_tol", 1e-4);
+    declare_parameter<double>("refine_tukey_c", 4.685);
+    declare_parameter<double>("refine_robust_sigma", 0.02);
+    declare_parameter<double>("refine_inlier_thresh", 0.1);
+    declare_parameter<double>("refine_min_overlap_frac", 0.5);
+
     matcher_config_.grad_thresh_rel = get_parameter("grad_thresh_rel").as_double();
     matcher_config_.coarse_max_deg = get_parameter("coarse_max_deg").as_double();
     matcher_config_.coarse_step_deg = get_parameter("coarse_step_deg").as_double();
@@ -74,6 +85,15 @@ class GeolocMatcherNode : public rclcpp::Node {
     covariance_config_.yaw_sigma_deg = get_parameter("yaw_sigma_deg").as_double();
     covariance_config_.basemap_bias_sigma_m = get_parameter("basemap_bias_sigma_m").as_double();
 
+    refine_config_.max_iterations = get_parameter("refine_max_iterations").as_int();
+    refine_config_.trans_tol = get_parameter("refine_trans_tol").as_double();
+    refine_config_.rot_tol = get_parameter("refine_rot_tol").as_double();
+    refine_config_.tukey_c = get_parameter("refine_tukey_c").as_double();
+    refine_config_.robust_sigma = get_parameter("refine_robust_sigma").as_double();
+    refine_config_.inlier_thresh = get_parameter("refine_inlier_thresh").as_double();
+    refine_config_.min_overlap_frac = get_parameter("refine_min_overlap_frac").as_double();
+    refiner_ = std::make_unique<Se2Refiner>(refine_config_);
+
     patch_sub_ = create_subscription<geoloc_msgs::msg::OrthoPatch>(
         "/geoloc/ortho_patch", rclcpp::SensorDataQoS(),
         [this](const geoloc_msgs::msg::OrthoPatch::SharedPtr p) { onPatch(p); });
@@ -82,7 +102,7 @@ class GeolocMatcherNode : public rclcpp::Node {
 
     map_client_ = create_client<geoloc_msgs::srv::MapWindow>("/geoloc_map/map_window");
 
-    RCLCPP_INFO(get_logger(), "geoloc_matcher up (T19 phase-correlation channel)");
+    RCLCPP_INFO(get_logger(), "geoloc_matcher up (T19 phase-correlation + T17 SE(2) refinement)");
   }
 
  private:
@@ -132,15 +152,32 @@ class GeolocMatcherNode : public rclcpp::Node {
     fix.header.frame_id = "map_enu";
     fix.channel = geoloc_msgs::msg::SE2Fix::CHANNEL_PHASE_CORR;
 
+    // T17: refine the coarse phase-correlation fix to an accurate pose. On
+    // refusal or non-convergence the coarse fix is kept -- this channel still
+    // never judges, it only reports the best estimate it produced.
+    double shift_east_px = r.shift_east_px;
+    double shift_north_px = r.shift_north_px;
     PhaseCorrFix f = phaseCorrToFix(r, patch->gsd, covariance_config_);
+    if (r.success) {
+      const Se2RefineResult rr =
+          refiner_->refine(query, map, r.shift_east_px, r.shift_north_px, r.delta_yaw,
+                           &confidence);
+      if (rr.success && rr.converged) {
+        shift_east_px = rr.shift_east_px;
+        shift_north_px = rr.shift_north_px;
+        f = se2RefineToFix(rr, patch->gsd, r.peak_ratio, r.scale, r.valid_fraction,
+                           covariance_config_);
+        fix.channel = geoloc_msgs::msg::SE2Fix::CHANNEL_PHASE_CORR;
+      }
+    }
 
     // The shift from the matcher is in window pixel coordinates; fold in the
     // offset between the window origin and the patch's reported origin so the
     // delta is a correction in map_enu.
     const double win_origin_east = window.origin_east;
     const double win_origin_north = window.origin_north;
-    fix.delta_east = (win_origin_east + r.shift_east_px * window.gsd) - patch->origin_east;
-    fix.delta_north = (win_origin_north + r.shift_north_px * window.gsd) - patch->origin_north;
+    fix.delta_east = (win_origin_east + shift_east_px * window.gsd) - patch->origin_east;
+    fix.delta_north = (win_origin_north + shift_north_px * window.gsd) - patch->origin_north;
     fix.delta_yaw = f.delta_yaw;
 
     for (int i = 0; i < 9; ++i) fix.covariance[i] = f.covariance(i / 3, i % 3);
@@ -163,7 +200,9 @@ class GeolocMatcherNode : public rclcpp::Node {
 
   PhaseCorrConfig matcher_config_;
   PhaseCorrCovarianceConfig covariance_config_;
+  Se2RefineConfig refine_config_;
   std::unique_ptr<PhaseCorrMatcher> matcher_;
+  std::unique_ptr<Se2Refiner> refiner_;
 
   rclcpp::Subscription<geoloc_msgs::msg::OrthoPatch>::SharedPtr patch_sub_;
   rclcpp::Publisher<geoloc_msgs::msg::SE2Fix>::SharedPtr fix_pub_;
