@@ -17,7 +17,7 @@ from .align import (
     orient_up_from_cloud,
     pca_up_axis,
 )
-from .bagio import Capture
+from .bagio import RGB_TOPIC, Capture
 from .camera import Pinhole
 from .dsm import DsmGrid, run_dsm
 from .geo import GeoRef
@@ -160,7 +160,16 @@ def _cmd_ortho(cfg: dict) -> int:
     dem = DemField.open(Path(cfg["geopack_dir"]) / "dem.tif")
     cam = Pinhole.from_config(cfg["camera"], float(cfg["camera"].get("scale", 1.0)))
     odom = cap.read_odom()
-    stamps, images = cap.read_images(out / "cache_images.npz")
+    cam_cfg = cfg["camera"]
+    image_topic = str(cam_cfg.get("image_topic", RGB_TOPIC))
+    # Reading the raw full-res topic and shrinking here keeps the working
+    # resolution (and so the scaled intrinsics) unchanged. The cache is keyed
+    # by topic and scale so switching topics can never reuse the wrong frames.
+    downscale = float(cam_cfg.get("scale", 1.0)) if image_topic != RGB_TOPIC else 1.0
+    slug = image_topic.strip("/").replace("/", "_")
+    stamps, images = cap.read_images(
+        out / f"cache_images_{slug}_{downscale:g}.npz", image_topic, downscale
+    )
     Rcl = cfg["camera"].get("Rcl")
     R_lidar_to_cam = np.array(Rcl, dtype=np.float64).reshape(3, 3) if Rcl else None
     t0 = time.time()

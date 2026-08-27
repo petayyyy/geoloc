@@ -62,7 +62,17 @@ align: # T14/T15 step 1: camera_init -> UTM37N via RTK anchor
   window_step_s: 4.0
   min_pairs: 8
 
-camera: # camera_MARS_LVIG_AM.yaml @ scale 0.25 (the /rgb_img VIO image size)
+camera: # camera_MARS_LVIG_AM.yaml @ scale 0.25 (the VIO working size)
+  # /rgb_img is FAST-LIVO2's DEBUG visualization -- the VIO image with its
+  # projected lidar points drawn on top in green and blue. Those dots are
+  # burnt into the pixels, so every patch built from it carries synthetic
+  # marks the satellite basemap cannot contain, in the very image the matcher
+  # compares against the world. /left_camera/image is the raw sensor frame:
+  # clean, full 2448x2048, and stamped with the capture time rather than the
+  # fused-frame time FAST-LIVO2 restamps its output with. It is downscaled by
+  # `scale` at read time, so the working resolution and the intrinsics below
+  # are unchanged -- only the pixels get cleaner.
+  image_topic: /left_camera/image
   width: 2448
   height: 2048
   scale: 0.25
@@ -107,4 +117,9 @@ ortho: # T15
   agl_max_m: 100.0
   patch_every_n: 40
   aa_blur_passes: 2
-  img_time_offset_s: -0.1
+  # 0.0 for the raw camera topic: its header stamp IS the capture time, per
+  # the project rule that timestamps are sensor-capture time. The former
+  # -0.1 s existed only to undo FAST-LIVO2's restamping of /rgb_img, whose
+  # stamps do not pair with the camera's at all (best constant shift leaves
+  # 41 ms residual with 102 ms scatter -- there is no clean offset to find).
+  img_time_offset_s: 0.0

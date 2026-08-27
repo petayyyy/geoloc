@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 from rosbags.rosbag2 import Reader
 from rosbags.typesys import Stores, get_typestore
 
@@ -23,6 +24,7 @@ RTK_VEL_TOPIC = "/dji_osdk_ros/rtk_velocity"
 ODOM_TOPIC = "/aft_mapped_to_init"
 CLOUD_TOPIC = "/cloud_registered"
 RGB_TOPIC = "/rgb_img"
+RAW_CAMERA_TOPIC = "/left_camera/image"
 
 
 def decode_image_rgb(data: bytes, height: int, width: int, encoding: str) -> np.ndarray:
@@ -39,6 +41,17 @@ def decode_image_rgb(data: bytes, height: int, width: int, encoding: str) -> np.
     if encoding == "bgr8":
         img = img[:, :, ::-1]
     return np.ascontiguousarray(img)
+
+
+def _downscale_rgb(img: np.ndarray, scale: float) -> np.ndarray:
+    """Area-average downscale to `scale` of the original size."""
+    if not 0.0 < scale <= 1.0:
+        raise ValueError(f"downscale must be in (0, 1], got {scale}")
+    height = int(round(img.shape[0] * scale))
+    width = int(round(img.shape[1] * scale))
+    box = getattr(Image, "Resampling", Image).BOX
+    resized = Image.fromarray(img).resize((width, height), box)
+    return np.ascontiguousarray(np.asarray(resized, dtype=np.uint8))
 
 
 @dataclass
@@ -120,8 +133,27 @@ class Capture:
                 xyz = np.frombuffer(m.data, dtype=np.float32).reshape(m.width, m.point_step // 4)
                 yield t, np.ascontiguousarray(xyz[:, :3])
 
-    def read_images(self, cache: Path) -> np.ndarray:
-        """/rgb_img frames as (M, H, W, 3) uint8 RGB, plus (M,) stamps; cached to .npz."""
+    def read_images(
+        self, cache: Path, topic: str = RGB_TOPIC, downscale: float = 1.0
+    ) -> np.ndarray:
+        """Camera frames as (M, H, W, 3) uint8 RGB, plus (M,) stamps; cached to .npz.
+
+        `topic` matters more than it looks. `/rgb_img` is FAST-LIVO2's *debug
+        visualization*: the VIO image with its projected lidar points drawn on
+        top in green and blue. Those dots are burnt into the pixels, so every
+        patch and mosaic built from it carries synthetic marks that the
+        satellite basemap cannot possibly contain -- contamination in the one
+        image the matcher is supposed to compare against the world.
+        `/left_camera/image` is the raw sensor frame, clean and full
+        resolution, and its header stamp is the capture time rather than the
+        fused-frame time FAST-LIVO2 restamps its output with.
+
+        `downscale` (typically `camera.scale`) shrinks each frame at read
+        time, so the working resolution -- and the intrinsics that go with
+        it -- stay what they were, while the pixels come from the clean topic.
+        Downsampling a full-res frame also averages, which is slightly better
+        than the VIO's own decimated image.
+        """
         if cache.exists():
             with np.load(cache) as z:
                 return z["stamps"], z["images"]
@@ -129,13 +161,17 @@ class Capture:
         stamps, images = [], []
         with self._read() as reader:
             for conn, _ts, raw in reader.messages():
-                if conn.topic != RGB_TOPIC:
+                if conn.topic != topic:
                     continue
                 m = typestore.deserialize_cdr(raw, conn.msgtype)
                 t = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
                 img = decode_image_rgb(m.data, m.height, m.width, m.encoding)
+                if downscale != 1.0:
+                    img = _downscale_rgb(img, downscale)
                 stamps.append(t)
                 images.append(img)
+        if not stamps:
+            raise ValueError(f"no images on topic {topic!r} in {self.bag_dir}")
         stamps = np.asarray(stamps, dtype=np.float64)
         images = np.asarray(images, dtype=np.uint8)
         cache.parent.mkdir(parents=True, exist_ok=True)
