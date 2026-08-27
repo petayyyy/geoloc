@@ -166,14 +166,63 @@ georeference bugs. `align.estimate_scale` is `false` by default; turning it on
 requires a physical argument for the scale error and a passing
 `orthoproto check`.
 
+## Verified against the basemap (2026-08-27)
+
+The first check of this pipeline's output against something outside itself.
+Every earlier check was self-referential -- the ortho patch against a DSM
+built from the same odometry -- which is why a 430 km georeference error
+survived a full session.
+
+Run on `geoloc_capture_01` with the corrected georeference, the raw camera
+topic and the AMtown geopack:
+
+```
+check:  doppler/position ratio=0.9995
+align:  pose_graph, 27 nodes, scale=1.0000, residual mean=0.14 m max=0.25 m
+dsm:    1599x1149 @ 0.5 m, coverage=19.0%, z_shift=+6.60 m
+ortho:  409 frames warped, 0 skipped, mean lidar coverage=22.5%
+        AGL 52.2-79.2 m (median 69.6)
+```
+
+Registering `ortho_mosaic.tif` against the geopack's `ortho_b.tif` (Bing, the
+layer that actually contains imagery -- see below):
+
+| | value |
+|---|---|
+| NCC at zero shift | **0.419** |
+| peak NCC | 0.457 at **(-2.5, +3.0) m** |
+| overlap | 39.3% of mosaic pixels |
+| peak / best far lobe | 1.16 |
+
+So the mosaic lands on the right ground to within ~4 m with no fitting at all.
+Per-patch registration agrees: patches 0080-0160 peak at 0.22-0.50 with
+residuals of 5-8 m; the earliest patch is weakest, as expected where
+`TransformSeries.at` clamps instead of extrapolating.
+
+Read these numbers for what they are. The peak-to-lobe ratio of 1.16 is
+**not** a matching-grade result -- raw NCC over a whole heterogeneous mosaic
+is a broad statistic, and this is a georeference sanity check, not T19's
+matcher. The residual few metres mixes basemap georeferencing bias (T09, still
+unmeasured), alignment residual and DSM error, and nothing here separates
+them.
+
+`z_shift=+6.60 m` is a second, independent confirmation: the lidar DSM lands
+on the Copernicus DEM 6.6 m away, where the wrong-site geopack would have been
+out by ~900 m. Median AGL 69.6 m against the KML's planned 80 m is the
+expected sign -- COP30 is a DSM and reads the canopy of a treed village as
+ground.
+
 ## Known open items (not yet fixed)
 
-- **No basemap for the real site yet.** `configs/mapprep/amtown_armenia.yaml`
-  is written but the geopack has not been built (the build needs network for
-  Esri/Bing tiles, Copernicus GLO-30 and Overpass). Until then `dsm` and
-  `ortho` cannot run for this capture, and every previously produced
-  `data/outputs/geoloc_capture_01_ortho/*` artefact is georeferenced to the
-  wrong place and should be regenerated, not trusted.
+- **The geopack's `ortho_a` is placeholder cards and must be rebuilt.** Esri
+  has no imagery over this village above z18 and serves grey "Map data not yet
+  available" tiles at z19; `mapprep` now detects and refuses them, and the
+  corridor config swaps the providers (Bing 0.3 m primary, Esri 0.5 m
+  secondary), but the geopack on disk predates that. The verification above
+  used `ortho_b`, which is real. Rebuild before any T19 work.
+- **Lidar coverage is 22.5%**, so most of each patch is DEM-backed fill and
+  smears radially outward from the covered core. This is now the dominant
+  artefact in the mosaic, and it caps how much the basemap NCC can rise.
 - Genuine RTK fix quality is still unmeasured: `NavSatFix.status.status` is
   `0` on every message in this capture, so fixed/float/single is not
   recoverable from the bag. Worth resolving separately for T09.
