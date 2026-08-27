@@ -308,3 +308,46 @@ def test_opentopography_no_coverage_falls_through_to_glo90(cache_root, monkeypat
 
     assert paths == [cache_root / GLO90_TILE]
     assert len(calls) == 2
+
+
+def test_cached_low_priority_tile_never_pre_empts_the_configured_source(
+    cache_root, monkeypatch
+):
+    """Regression 2026-08-27: a stale GLO-90 tile silently outranked COP30.
+
+    An earlier build had left `Copernicus_DSM_COG_30_...` in the cache. The
+    next build asked for `opentopography_cop30` and got the 90 m tile back
+    without ever contacting the 30 m source -- exactly the silent coarsening
+    the fallback is supposed to make impossible.
+    """
+    monkeypatch.setenv(OT_KEY_ENV, "key")
+    cache_root.mkdir(parents=True, exist_ok=True)
+    (cache_root / GLO90_TILE).write_bytes(b"stale-90m-tile")
+    log = _fake_opentopo(monkeypatch, lambda request: _FakeResponse())
+
+    paths = fetch_dem_tiles(
+        AMTOWN_BOUNDS,
+        cache_dir=cache_root,
+        source_id="opentopography_cop30",
+        fallback_source_ids=("copernicus_glo90",),
+        api_key_env=OT_KEY_ENV,
+    )
+
+    assert len(log) == 1, "the configured 30 m source must be tried first"
+    assert paths == [cache_root / OT_TILE]
+
+
+def test_cached_high_priority_tile_is_still_reused(cache_root, monkeypatch):
+    cache_root.mkdir(parents=True, exist_ok=True)
+    (cache_root / GLO30_TILE).write_bytes(b"cached-30m")
+
+    def explode(request, timeout=120):
+        raise AssertionError("should not hit the network for a cached tile")
+
+    monkeypatch.setattr("mapprep.dem.urllib.request.urlopen", explode)
+    paths = fetch_dem_tiles(
+        AMTOWN_BOUNDS,
+        cache_dir=cache_root,
+        fallback_source_ids=("copernicus_glo90",),
+    )
+    assert paths == [cache_root / GLO30_TILE]

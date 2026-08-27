@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from pyproj import Transformer
+
 from . import dates as dates_mod
 from .classifier import class_fractions, classify
 from .config import cache_root as config_cache_root
@@ -104,7 +106,7 @@ def _build(args: argparse.Namespace) -> int:
                 notes_extra,
             )
 
-    manifest["bounds"] = _manifest_bounds(manifest, geopack_dir)
+    manifest["bounds"] = _manifest_bounds(bounds_wgs84, config["crs"])
 
     if "dem" in config:
         dem_cfg = config["dem"]
@@ -211,22 +213,33 @@ def _optional_path(config: dict, keys: list[str]) -> Path | None:
     return Path(node).expanduser() if isinstance(node, str) else None
 
 
-def _manifest_bounds(manifest: dict, geopack_dir: Path) -> dict:
-    first = next(
-        (layer for layer in manifest["layers"].values() if layer["file"].endswith(".tif")),
-        None,
-    )
-    if first is None:
-        raise RuntimeError("no ortho layers built")
-    import rasterio
+def _manifest_bounds(bounds_wgs84: dict, crs_epsg: str) -> dict:
+    """The corridor's true UTM extent -- the same input every layer grid uses.
 
-    with rasterio.open(geopack_dir / first["file"]) as ds:
-        return {
-            "east_min": ds.bounds.left,
-            "east_max": ds.bounds.right,
-            "north_min": ds.bounds.bottom,
-            "north_max": ds.bounds.top,
-        }
+    This used to report the *first* layer's raster bounds instead. Those are
+    already snapped to that layer's own gsd (`PixelGrid.from_bounds` floors the
+    origin to a whole multiple of it), so re-deriving another layer's grid from
+    them lands on a different cell whenever the two gsds don't divide evenly --
+    which is exactly what `verify` does, and what made a 0.3 m + 0.5 m geopack
+    fail with "ortho_b.tif: origin_east differs: manifest 484744.5, file
+    484745.0" (2026-08-27; the Maykop corridor's numbers happened to align, so
+    it never showed up there).
+
+    Reporting the unsnapped extent makes every layer snap from an identical
+    base, so `verify_geotransform` reproduces each grid exactly. It is also the
+    honest reading of `bounds`: the corridor that was asked for, not whichever
+    layer happened to be written first.
+    """
+    transformer = Transformer.from_crs("EPSG:4326", crs_epsg, always_xy=True)
+    west, east = bounds_wgs84["west"], bounds_wgs84["east"]
+    south, north = bounds_wgs84["south"], bounds_wgs84["north"]
+    easts, norths = transformer.transform([west, east, east, west], [north, north, south, south])
+    return {
+        "east_min": min(easts),
+        "east_max": max(easts),
+        "north_min": min(norths),
+        "north_max": max(norths),
+    }
 
 
 def _import_cache(args: argparse.Namespace) -> int:

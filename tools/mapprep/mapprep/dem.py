@@ -291,22 +291,24 @@ def fetch_dem_tiles(
 
     tile_count = len(tile_names_for(bounds_wgs84, DEFAULT_DEM_SOURCE))
     per_source_names = [_names(src) for src in sources]
+    def _cached(name: str) -> Path | None:
+        path = cache_dir / name
+        return path if path.exists() and path.stat().st_size else None
+
     paths = []
     for index in range(tile_count):
         names = [names_for_src[index] for names_for_src in per_source_names]
-        def _is_cached(name: str) -> bool:
-            path = cache_dir / name
-            return path.exists() and bool(path.stat().st_size)
-
-        cached = next((cache_dir / n for n in names if _is_cached(n)), None)
-        if cached is not None:
-            paths.append(cached)
-            continue
-        if offline:
-            raise DemFetchError(
-                f"DEM tile {names[0]} not cached in {cache_dir}; build with network once"
-            )
+        # Strict source priority. A cached tile from a *lower*-priority source
+        # must never pre-empt a higher-priority one -- that is how a stale
+        # 90 m tile from an earlier build silently outranked the 30 m source
+        # the config asks for (fixed 2026-08-27, see test_dem.py).
         for src, name in zip(sources, names):
+            hit = _cached(name)
+            if hit is not None:
+                paths.append(hit)
+                break
+            if offline:
+                continue
             if src.kind == "opentopography":
                 fetched = _download_opentopography(
                     src, bounds_wgs84, cache_dir / name, api_key_env, bbox_margin_deg
@@ -317,6 +319,10 @@ def fetch_dem_tiles(
                 paths.append(cache_dir / name)
                 break
         else:
+            if offline:
+                raise DemFetchError(
+                    f"DEM tile {names[0]} not cached in {cache_dir}; build with network once"
+                )
             tried = ", ".join(f"{s.source_id}:{n}" for s, n in zip(sources, names))
             raise DemFetchError(
                 f"no DEM coverage for tile {names[0]} in any configured source ({tried}). "

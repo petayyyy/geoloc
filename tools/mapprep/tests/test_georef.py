@@ -60,3 +60,71 @@ def test_row_increases_southward():
     _, north_top = grid.pixel_center_to_utm(0, 0)
     _, north_below = grid.pixel_center_to_utm(0, 1)
     assert north_below < north_top
+
+
+# --- manifest bounds must be the snapping base every layer shares ----------
+#
+# Regression 2026-08-27. `_manifest_bounds` reported the FIRST layer's raster
+# bounds, which are already floored to that layer's own gsd. `verify` then
+# re-derives every other layer's grid from them, so a geopack mixing 0.3 m and
+# 0.5 m layers failed with
+#   ortho_b.tif: origin_east differs: manifest 484744.5, file 484745.0
+# The Maykop corridor's numbers happened to align, so this never fired there.
+
+from pyproj import Transformer  # noqa: E402
+
+from mapprep.cli import _manifest_bounds  # noqa: E402
+
+AMTOWN_WGS84 = {"west": 44.8215, "south": 39.9180, "east": 44.8355, "north": 39.9265}
+AMTOWN_CRS = "EPSG:32638"
+
+
+def _layer_grid_as_the_mosaic_builds_it(bounds_wgs84, crs, gsd):
+    """Exactly what mosaic.build_layer does: project the corners, then snap."""
+    transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    west, east = bounds_wgs84["west"], bounds_wgs84["east"]
+    south, north = bounds_wgs84["south"], bounds_wgs84["north"]
+    easts, norths = transformer.transform([west, east, east, west], [north, north, south, south])
+    return PixelGrid.from_bounds(min(easts), max(easts), min(norths), max(norths), gsd)
+
+
+def _grid_as_verify_derives_it(manifest_bounds, gsd):
+    return PixelGrid.from_bounds(
+        manifest_bounds["east_min"],
+        manifest_bounds["east_max"],
+        manifest_bounds["north_min"],
+        manifest_bounds["north_max"],
+        gsd,
+    )
+
+
+def test_every_layer_gsd_snaps_the_same_from_manifest_bounds():
+    bounds = _manifest_bounds(AMTOWN_WGS84, AMTOWN_CRS)
+    for gsd in (0.3, 0.5, 1.0, 10.0):
+        built = _layer_grid_as_the_mosaic_builds_it(AMTOWN_WGS84, AMTOWN_CRS, gsd)
+        derived = _grid_as_verify_derives_it(bounds, gsd)
+        assert derived == built, f"gsd {gsd}: verify would see {derived}, file has {built}"
+
+
+def test_snapped_layer_bounds_are_not_a_valid_snapping_base():
+    """Pin down the actual defect, so the fix can't quietly regress."""
+    ortho_a = _layer_grid_as_the_mosaic_builds_it(AMTOWN_WGS84, AMTOWN_CRS, 0.3)
+    from_first_layer = {
+        "east_min": ortho_a.origin_east,
+        "east_max": ortho_a.origin_east + ortho_a.width * ortho_a.gsd,
+        "north_min": ortho_a.origin_north - ortho_a.height * ortho_a.gsd,
+        "north_max": ortho_a.origin_north,
+    }
+    ortho_b = _layer_grid_as_the_mosaic_builds_it(AMTOWN_WGS84, AMTOWN_CRS, 0.5)
+    assert _grid_as_verify_derives_it(from_first_layer, 0.5) != ortho_b
+
+
+def test_manifest_bounds_lie_inside_every_layer_raster():
+    """Snapping only ever expands outward, so `validate`'s coverage check holds."""
+    bounds = _manifest_bounds(AMTOWN_WGS84, AMTOWN_CRS)
+    for gsd in (0.3, 0.5, 10.0):
+        grid = _layer_grid_as_the_mosaic_builds_it(AMTOWN_WGS84, AMTOWN_CRS, gsd)
+        assert grid.origin_east <= bounds["east_min"]
+        assert grid.origin_east + grid.width * grid.gsd >= bounds["east_max"]
+        assert grid.origin_north >= bounds["north_max"]
+        assert grid.origin_north - grid.height * grid.gsd <= bounds["north_min"]
