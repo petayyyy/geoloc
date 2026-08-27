@@ -1,0 +1,82 @@
+# Offline true-ortho config for the FULL MARS-LVIG AMtown03 sequence, replayed
+# through FAST-LIVO2 (see tools/metrics/t19/replay_amtown03.sh). Same rig and
+# camera as geoloc_capture_01, so the camera/rtk/align parameters are shared;
+# only the bag/out paths differ.
+#
+# SITE: the Ararat plain, ARMENIA -- 39.92 N / 44.83 E, UTM zone 38N. This
+# sequence was NOT flown near Maykop; the maykop-corridor geopack is ~430 km
+# away. Established 2026-08-27, see tools/orthoproto/README.md.
+#
+# Data quirks (see tools/orthoproto/README.md and geoloc_capture_01.yaml):
+#   - rtk.swap_latlon: FALSE -- the DJI NavSatFix fields are labelled
+#     correctly. Reading them swapped stretches northing x1.300 and squeezes
+#     easting x0.712, which is what the old "odometry under-measures by 22%"
+#     story really was. Guard it with `python -m orthoproto check`;
+#   - rtk altitude is fine (level flight); dsm.z_datum=dem still anchors the
+#     DSM to the DEM, because one constant altitude carries no vertical shape;
+#   - /rgb_img is bgr8; camera is the FAST-LIVO2 VIO scale (0.25) with Rcl.
+
+bag_dir: "data/captures/AMtown03_processed"
+# NOTE: this geopack must be built once, with network:
+#   python -m mapprep build --config configs/mapprep/amtown_armenia.yaml \
+#       --out data/missions/amtown-armenia-2026-08.geopack
+geopack_dir: "data/missions/amtown-armenia-2026-08.geopack"
+out_dir: "data/outputs/AMtown03_ortho"
+crs: "EPSG:32638"
+
+rtk:
+  swap_latlon: false
+  velocity_frame: ned
+  doppler_baseline_s: 3.0
+  doppler_ratio_tol: 0.02
+
+align:
+  method: pose_graph
+  # No global scale: the odometry is metrically correct once the RTK fixes
+  # are read properly (see geoloc_capture_01.yaml). A free scale here would
+  # hide the next georeference bug the same way it hid this one.
+  estimate_scale: false
+  step_s: 2.0
+  rtk_weight: 1.0
+  smooth_weight: 0.5
+  rtk_huber_m: 2.0
+  max_iter: 200
+  window_s: 12.0
+  min_pairs: 8
+
+camera:
+  width: 2448
+  height: 2048
+  scale: 0.25
+  fx: 1453.88
+  fy: 1452.85
+  cx: 1182.53
+  cy: 1045.82
+  d0: -0.052
+  d1: 0.1168
+  d2: 0.0015
+  d3: 0.00013
+  Rcl:
+    - [-0.0022464, -0.9997299, -0.0231319]
+    - [-0.0084211,  0.0231501, -0.9996966]
+    - [ 0.9999620, -0.0020509, -0.0084708]
+
+dsm:
+  dsm_gsd_m: 0.5
+  margin_m: 150.0
+  range_max_m: 190.0
+  median_win: 5
+  outlier_threshold_m: 3.0
+  dense_min_points: 4
+  sparse_min_points: 1
+  z_datum: dem
+
+ortho:
+  patch_gsd_m: 0.5
+  patch_radius_m: 130.0
+  ray_steps: 48
+  agl_floor_m: 30.0
+  agl_max_m: 100.0
+  patch_every_n: 40
+  aa_blur_passes: 2
+  img_time_offset_s: -0.1
