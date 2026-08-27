@@ -33,9 +33,21 @@ origin:
   alt: 80.0
 
 layers:
+  # Provider assignment is site-specific, not a house default. Over this
+  # village Esri World Imagery has nothing finer than z18 (0.46 m/px) and
+  # answers z19 with "Map data not yet available" cards; Bing has real z19
+  # (0.23 m/px). So Bing is the 0.3 m primary here and Esri the 0.5 m
+  # secondary, which is the only assignment where both layers hit their
+  # target GSD with actual imagery.
+  #
+  # max_zoom stays at the provider ceiling on purpose: `select_zoom` probes
+  # and steps down when a zoom turns out to be placeholder cards, which is
+  # more robust than a hand-tuned number that goes stale when a provider
+  # publishes new imagery.
+  #
   # Primary: 0.3 m/px -- flight AGL is 80 m (AMtown.kml <mis:altitude>).
   - name: ortho_a
-    provider: esri_world_imagery
+    provider: bing_aerial
     target_gsd_m: 0.3
     max_zoom: 19
     min_zoom: 17
@@ -43,7 +55,7 @@ layers:
   # project invariant, the query patch and the reference must never share a
   # provider.
   - name: ortho_b
-    provider: bing_aerial
+    provider: esri_world_imagery
     target_gsd_m: 0.5
     max_zoom: 19
     min_zoom: 17
@@ -55,6 +67,17 @@ mosaic:
   overviews: [2, 4, 8]       # coarse level ~4 m/px for cold start / LOST search
   jpeg_quality: 85
   seam_px: 2
+  # A tile server answering 200 is not the same as it having imagery. A tile
+  # counts as a provider placeholder when it is BOTH textureless (greyscale
+  # std below placeholder_std -- Esri's card measures ~5, real imagery here
+  # ~55) AND byte-identical to at least placeholder_min_repeats others in the
+  # layer. Such tiles are excluded from the mosaic and marked invalid, and a
+  # layer over placeholder_max_frac of them fails the build rather than
+  # shipping a reference basemap that reports validity it does not have.
+  # Set placeholder_std to 0 to disable the check entirely.
+  placeholder_std: 8.0
+  placeholder_min_repeats: 4
+  placeholder_max_frac: 0.2
 
 # Copernicus GLO-30 DEM (T06): filler where the Livox FOV does not cover the
 # camera frame. The terrain here sits ~1050 m above the ellipsoid (the RTK

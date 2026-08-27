@@ -21,6 +21,11 @@ import rasterio.warp
 from pyproj import Transformer
 
 from . import webmercator
+from .coverage import (
+    DEFAULT_PLACEHOLDER_MIN_REPEATS,
+    DEFAULT_PLACEHOLDER_STD,
+    find_placeholder_tiles,
+)
 from .fetch import fetch_tile, find_cached_tile, load_meta
 from .georef import PixelGrid
 from .providers import Provider
@@ -41,6 +46,7 @@ class BuildResult:
     mask_path: Path
     tiles_expected: int
     tiles_fetched: int
+    placeholder_tiles: int = 0
     missing_tiles: list[tuple[int, int]] = field(default_factory=list)
     seam_count: int = 0
     upsampling_refused: bool = False
@@ -87,8 +93,9 @@ def select_zoom(
     min_zoom: int,
     max_zoom: int,
     offline: bool,
+    placeholder_std: float = DEFAULT_PLACEHOLDER_STD,
 ) -> int:
-    """Pick the finest zoom whose tiles all exist (probed at corners + centre)."""
+    """Pick the finest zoom that actually has imagery (probed at corners + centre)."""
     west, south, east, north = (
         bounds_wgs84["west"],
         bounds_wgs84["south"],
@@ -109,9 +116,28 @@ def select_zoom(
                 ((west + east) / 2, (south + north) / 2),
             ]
         ]
-        if all(fetch_tile(provider, x, y, z, cache_root, offline=offline) for x, y in probe):
-            return z
-    raise RuntimeError(f"no zoom level with coverage between {min_zoom} and {max_zoom}")
+        if not all(fetch_tile(provider, x, y, z, cache_root, offline=offline) for x, y in probe):
+            continue
+        # HTTP 200 is not coverage: a provider without local imagery at this
+        # zoom serves a placeholder card. Step down rather than build a
+        # basemap out of them (found 2026-08-27: Esri has this village at
+        # z17/z18 but answers z19 with "Map data not yet available").
+        probe_paths = [
+            path
+            for path in (find_cached_tile(provider, cache_root, x, y, z) for x, y in probe)
+            if path is not None
+        ]
+        blank = len(
+            find_placeholder_tiles(probe_paths, placeholder_std, min_repeats=len(probe) // 2 + 1)
+        )
+        if blank > len(probe) // 2:
+            print(
+                f"  zoom {z}: {blank}/{len(probe)} probe tiles are placeholders, stepping down",
+                flush=True,
+            )
+            continue
+        return z
+    raise RuntimeError(f"no zoom level with real imagery between {min_zoom} and {max_zoom}")
 
 
 def build_layer(
@@ -128,6 +154,9 @@ def build_layer(
     overviews: tuple[int, ...] = (2, 4, 8),
     enrich_dates: bool = False,
     cloud_polygons: list[list[tuple[float, float]]] | None = None,
+    placeholder_std: float = DEFAULT_PLACEHOLDER_STD,
+    placeholder_min_repeats: int = DEFAULT_PLACEHOLDER_MIN_REPEATS,
+    placeholder_max_frac: float = 0.2,
 ) -> BuildResult:
     west, south, east, north = (
         bounds_wgs84["west"],
@@ -168,8 +197,39 @@ def build_layer(
                 f"  tiles: {index + 1}/{len(tiles)} (cache hits, missing so far: {len(missing)})",
                 flush=True,
             )
+
+    # Served-but-empty tiles are found layer-wide, because "the same card
+    # repeated" is only visible across the whole set.
+    cached = {
+        (x, y): find_cached_tile(provider, cache_root, x, y, zoom)
+        for x, y in tiles
+        if (x, y) not in set(missing)
+    }
+    blank_paths = find_placeholder_tiles(
+        [path for path in cached.values() if path is not None],
+        placeholder_std,
+        placeholder_min_repeats,
+    )
+    placeholders = [xy for xy, path in cached.items() if path is not None and path in blank_paths]
+    if placeholders:
+        print(
+            f"  {len(placeholders)}/{len(tiles)} tiles carry no imagery "
+            f"(provider placeholder); excluded and marked invalid",
+            flush=True,
+        )
+    # Out of the mosaic and invalid in the validity mask, exactly like a
+    # tile the server never had.
+    missing = sorted(set(missing) | set(placeholders))
     fetched = len(tiles) - len(missing)
     missing_set = set(missing)
+    if tiles and len(placeholders) > placeholder_max_frac * len(tiles):
+        raise RuntimeError(
+            f"{ortho_path.stem}: {len(placeholders)}/{len(tiles)} tiles from "
+            f"{provider.id} at zoom {zoom} are placeholders ('no imagery here'), over the "
+            f"{placeholder_max_frac:.0%} limit. The provider has no coverage at this zoom "
+            "for this corridor -- lower the layer's max_zoom, or use another provider. "
+            "Refusing to build a basemap that would report validity it does not have."
+        )
     meta = load_meta(provider, cache_root) if enrich_dates else {}
 
     ortho_path.parent.mkdir(parents=True, exist_ok=True)
@@ -216,6 +276,7 @@ def build_layer(
         mask_path=mask_path,
         tiles_expected=len(tiles),
         tiles_fetched=fetched,
+        placeholder_tiles=len(placeholders),
         missing_tiles=missing,
         seam_count=seam_count,
         upsampling_refused=upsampling_refused,

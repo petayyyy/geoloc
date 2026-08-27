@@ -12,6 +12,7 @@ from . import dates as dates_mod
 from .classifier import class_fractions, classify
 from .config import cache_root as config_cache_root
 from .config import load_config, overviews
+from .coverage import DEFAULT_PLACEHOLDER_MIN_REPEATS, DEFAULT_PLACEHOLDER_STD
 from .dem import DEFAULT_DEM_SOURCE, build_dem, fetch_dem_tiles, source_id_of_tile
 from .fetch import force_ipv4
 from .geoid import GridGeoid, resolve_egm2008_grid
@@ -55,6 +56,7 @@ def _build(args: argparse.Namespace) -> int:
                 layer_cfg.get("min_zoom", provider.min_zoom),
                 layer_cfg.get("max_zoom", provider.max_zoom),
                 args.offline,
+                placeholder_std=_placeholder_std(config),
             )
             print(
                 f"[{layer_cfg['name']}] {provider.name}: source zoom {zoom}, "
@@ -88,6 +90,15 @@ def _build(args: argparse.Namespace) -> int:
                 overviews=overviews(config),
                 enrich_dates=enrich_dates,
                 cloud_polygons=_load_cloud_polygons(layer_cfg, Path(args.config).parent),
+                placeholder_std=_placeholder_std(config),
+                placeholder_min_repeats=int(
+                    config.get("mosaic", {}).get(
+                        "placeholder_min_repeats", DEFAULT_PLACEHOLDER_MIN_REPEATS
+                    )
+                ),
+                placeholder_max_frac=float(
+                    config.get("mosaic", {}).get("placeholder_max_frac", 0.2)
+                ),
             )
             print(
                 f"[{layer_cfg['name']}] mosaic {result.grid.width}x{result.grid.height} "
@@ -211,6 +222,11 @@ def _optional_path(config: dict, keys: list[str]) -> Path | None:
         if node is None:
             return None
     return Path(node).expanduser() if isinstance(node, str) else None
+
+
+def _placeholder_std(config: dict) -> float:
+    """Texture threshold below which a served tile counts as "no imagery here"."""
+    return float(config.get("mosaic", {}).get("placeholder_std", DEFAULT_PLACEHOLDER_STD))
 
 
 def _manifest_bounds(bounds_wgs84: dict, crs_epsg: str) -> dict:

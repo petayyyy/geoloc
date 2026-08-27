@@ -2,8 +2,9 @@
 T05-I-01 (pyramid levels match the base downsampling)."""
 
 import numpy as np
+import pytest
 import rasterio
-from conftest import NATIVE_GSD, PROVIDER, X0, Y0, Z, tile_color
+from conftest import NATIVE_GSD, PROVIDER, X0, Y0, Z, tile_color, write_tile
 from pyproj import Transformer
 
 from mapprep import webmercator
@@ -124,3 +125,102 @@ def test_pyramid_mask_levels_exact(tmp_path, cache_root, bounds_2x2, filled_cach
             )
             diff = np.abs(ovr.astype(np.int32) - decimated.astype(np.int32))
             assert diff.max() == 0, f"mask overview {level}x deviates (lossless)"
+
+
+# --- provider placeholder tiles (regression, 2026-08-27) --------------------
+#
+# Esri World Imagery answers any zoom it lacks locally with a grey "Map data
+# not yet available" card -- a valid 200 response and a valid JPEG. Both
+# geopacks built before this date had ortho_a made entirely of those cards,
+# with validity_a reporting 100% valid, and passed verify/validate/classify.
+# For a stack whose top metric is false-fix rate, a reference basemap that
+# claims validity it does not have is the worst possible input.
+
+from pathlib import Path  # noqa: E402
+
+from mapprep.coverage import find_placeholder_tiles  # noqa: E402
+
+
+def _write_raw_tile(cache_root, x, y, z, payload: bytes) -> Path:
+    path = cache_root / PROVIDER.id / f"{z}/{x}/{y}.jpg"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path
+
+
+def _placeholder_bytes() -> bytes:
+    """A textureless card, as a real JPEG: flat grey with faint markings."""
+    import io
+
+    from PIL import Image
+
+    arr = np.full((256, 256, 3), 205, dtype=np.uint8)
+    arr[120:130, 40:210] = 212  # the faint text row
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
+def _textured_bytes(seed: int) -> bytes:
+    import io
+
+    from PIL import Image
+
+    rng = np.random.default_rng(seed)
+    arr = rng.integers(0, 255, size=(256, 256, 3), dtype=np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
+def test_repeated_textureless_tiles_are_flagged(cache_root):
+    card = _placeholder_bytes()
+    paths = [_write_raw_tile(cache_root, X0 + i, Y0, Z, card) for i in range(6)]
+    assert find_placeholder_tiles(paths) == set(paths)
+
+
+def test_unique_flat_colour_tiles_are_not_flagged(cache_root):
+    """A uniform field is textureless but real; only *repeated* cards count."""
+    paths = []
+    for i in range(6):
+        write_tile(cache_root, X0 + i, Y0, Z, tile_color(X0 + i, Y0))
+        paths.append(cache_root / PROVIDER.id / f"{Z}/{X0 + i}/{Y0}.jpg")
+    assert find_placeholder_tiles(paths) == set()
+
+
+def test_textured_tiles_are_never_flagged(cache_root):
+    paths = [_write_raw_tile(cache_root, X0 + i, Y0, Z, _textured_bytes(i)) for i in range(6)]
+    assert find_placeholder_tiles(paths) == set()
+
+
+def test_a_few_identical_tiles_are_below_the_repeat_threshold(cache_root):
+    card = _placeholder_bytes()
+    paths = [_write_raw_tile(cache_root, X0 + i, Y0, Z, card) for i in range(2)]
+    assert find_placeholder_tiles(paths, min_repeats=4) == set()
+
+
+def test_detection_can_be_disabled(cache_root):
+    card = _placeholder_bytes()
+    paths = [_write_raw_tile(cache_root, X0 + i, Y0, Z, card) for i in range(6)]
+    assert find_placeholder_tiles(paths, std_threshold=0.0) == set()
+
+
+def test_mostly_placeholder_layer_refuses_to_build(cache_root, bounds_2x2, tmp_path):
+    """Honest refusal: never ship a basemap that reports validity it lacks."""
+    card = _placeholder_bytes()
+    for dx in range(2):
+        for dy in range(2):
+            _write_raw_tile(cache_root, X0 + dx, Y0 + dy, Z, card)
+    with pytest.raises(RuntimeError, match="are placeholders"):
+        build_layer(
+            PROVIDER,
+            bounds_2x2,
+            NATIVE_GSD,
+            Z,
+            cache_root,
+            tmp_path / "ortho_a.tif",
+            tmp_path / "validity_a.tif",
+            "EPSG:32637",
+            offline=True,
+            placeholder_min_repeats=4,
+        )
