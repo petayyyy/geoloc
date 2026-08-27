@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geoloc-metrics"
+version = "0.1.0"
+description = "T12: single metrics implementation for all test levels (fix, trajectory, consistency, runtime)"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.21",
+    "scipy>=1.8",
+    "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+parquet = ["pandas>=1.5", "pyarrow>=10"]
+
+[project.scripts]
+geoloc-metrics = "geoloc_metrics.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["geoloc_metrics*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

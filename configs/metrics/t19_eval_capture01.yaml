@@ -1,0 +1,53 @@
+# T19 phase-correlation channel evaluation on the replayed AMtown03 slice
+# (geoloc_capture_01 is a ~59 s FAST-LIVO2-processed segment of AMtown03, same
+# rig/location). See tools/metrics/t19/run_t19.py and T12/T19 task cards.
+#
+# The matcher's own gates (peak_ratio, scale check, covisibility) are the
+# acceptance proxy until T22 (integrity) lands. IFR is measured against RTK.
+#
+# SITE CORRECTION 2026-08-27: this sequence was flown over the Ararat
+# plain, ARMENIA (39.92 N / 44.83 E, UTM 38N), not near Maykop. The RTK
+# lat/lon fields are correctly labelled -- `swap_latlon: true` was the bug
+# that faked a 22% odometry scale error. The basemap below must be built
+# once, with network:
+#   python -m mapprep build --config configs/mapprep/amtown_armenia.yaml \
+#       --out data/missions/amtown-armenia-2026-08.geopack
+# Until it exists this evaluation cannot run, and any IFR measured against
+# the maykop basemap is meaningless (wrong place by ~430 km).
+run_id: amtown03_capture01_t19
+bag_dir: "data/captures/geoloc_capture_01"
+ortho_dir: "data/outputs/geoloc_capture_01_ortho"
+basemap: "data/missions/amtown-armenia-2026-08.geopack/ortho_a.tif"
+semantic: "data/missions/amtown-armenia-2026-08.geopack/semantic.tif"
+out_dir: "data/outputs/geoloc_capture_01_t19"
+crs: "EPSG:32638"
+target: "x86"
+git_sha: ""
+seed: 42
+patch_radius_m: 130.0
+
+rtk:
+  swap_latlon: false  # fields are correctly labelled; verify with `orthoproto check`
+  velocity_frame: ned
+
+matcher:  # T19 knobs, same defaults as geoloc_matcher_node.cpp
+  gsd: 0.5
+  prior_radius_m: 60.0
+  grad_thresh_rel: 0.0
+  coarse_max_deg: 18.0
+  coarse_step_deg: 6.0
+  nrho: 64
+  ntheta: 512
+  scale_check_tolerance: 0.10
+  min_peak_ratio: 1.6
+  position_sigma_m: 8.0
+  yaw_sigma_deg: 1.5
+  basemap_bias_sigma_m: 3.0
+
+gate:  # acceptance proxy (T22 replaces this with the real integrity monitor)
+  min_peak_ratio: 1.6
+  min_covisibility: 0.20
+
+bias:  # basemap georeferencing bias (T09); null until measured
+  east: 0.0
+  north: 0.0
