@@ -205,9 +205,12 @@ def _synthetic_scaled_path(
 
 
 def test_pose_graph_recovers_similarity():
+    """`estimate_scale=True` still works -- it is opt-in, not removed."""
     rng = np.random.default_rng(100)
     odom, rtk, scale, R, t_true = _synthetic_scaled_path(rng, scale=1.2, heading=0.4)
-    res = align_pose_graph(odom, rtk, up_odom=np.array([0.0, 0.0, 1.0]), step_s=4.0)
+    res = align_pose_graph(
+        odom, rtk, up_odom=np.array([0.0, 0.0, 1.0]), step_s=4.0, estimate_scale=True
+    )
 
     assert abs(res.series.scale - scale) < 0.02, f"scale {res.series.scale} vs {scale}"
     assert res.residuals.mean() < 0.5, f"mean residual {res.residuals.mean()}"
@@ -226,7 +229,9 @@ def test_pose_graph_robust_to_rtk_outliers():
     odom, rtk, scale, R, t_true = _synthetic_scaled_path(
         rng, scale=1.2, heading=0.4, outliers=True
     )
-    res = align_pose_graph(odom, rtk, up_odom=np.array([0.0, 0.0, 1.0]), step_s=4.0)
+    res = align_pose_graph(
+        odom, rtk, up_odom=np.array([0.0, 0.0, 1.0]), step_s=4.0, estimate_scale=True
+    )
 
     # Huber loss must reject the 50 m outliers: scale stays close and the
     # bulk of the mapped positions stay near their (non-outlier) RTK fixes.
@@ -269,3 +274,27 @@ def test_transform_series_scale_applies():
     out = ts.apply(np.array([[1.0, 0.0, 0.0]]), 0.0)
     assert np.allclose(out, [[12.0, 20.0, 30.0]])
 
+
+
+def test_pose_graph_is_rigid_by_default():
+    """Default alignment must not invent a scale (regression, 2026-08-27).
+
+    A free scale silently absorbed a lat/lon-swap georeference bug on
+    `geoloc_capture_01` for a full session, reporting it as a 1.2261 "odometry
+    under-measures distance by 22%" property. Rigid is the default; scale is
+    opt-in and has to be argued for.
+    """
+    rng = np.random.default_rng(101)
+    odom, rtk, _scale, _R, _t = _synthetic_scaled_path(rng, scale=1.0, heading=0.4)
+    res = align_pose_graph(odom, rtk, up_odom=np.array([0.0, 0.0, 1.0]), step_s=4.0)
+    assert res.series.scale == 1.0
+    assert res.residuals.mean() < 0.5
+
+
+def test_pose_graph_default_surfaces_a_scale_error_instead_of_hiding_it():
+    """With scale off, a 20% metric error shows up as metres of residual."""
+    rng = np.random.default_rng(102)
+    odom, rtk, _scale, _R, _t = _synthetic_scaled_path(rng, scale=1.2, heading=0.4)
+    res = align_pose_graph(odom, rtk, up_odom=np.array([0.0, 0.0, 1.0]), step_s=4.0)
+    assert res.series.scale == 1.0
+    assert res.residuals.max() > 5.0

@@ -1,29 +1,56 @@
 # Offline true-ortho prototype config for geoloc_capture_01
-# (Maykop corridor, MARS-LVIG rig replayed through the FAST-LIVO2 port).
+# (MARS-LVIG AMtown03, replayed through the FAST-LIVO2 port).
+#
+# SITE: the Ararat plain, ARMENIA -- 39.92 N / 44.83 E, UTM zone 38N, terrain
+# ~1050 m above the ellipsoid. This capture was NOT flown near Maykop; see
+# configs/mapprep/amtown_armenia.yaml and tools/orthoproto/README.md for how
+# that was established (2026-08-27).
 #
 # Data quirks of this capture, recorded here because they are config, not code:
-#   - rtk.swap_latlon: the DJI RTK topic stores lat/lon in swapped fields;
-#   - rtk altitude is unreliable (frozen at ~1155.6 m); dsm.z_datum=dem shifts
-#     the DSM onto the geopack DEM ellipsoid instead;
+#   - rtk.swap_latlon: FALSE. The DJI NavSatFix fields are correctly labelled.
+#     Reading them swapped stretches northing x1.300 and squeezes easting
+#     x0.712, which is what the old "odometry under-measures by 22%" story
+#     really was. `orthoproto check` guards this;
+#   - rtk.velocity_frame: /dji_osdk_ros/rtk_velocity is NED (x=North, y=East),
+#     measured against the position derivative (slope 1.003/1.001, r=0.9998);
+#   - rtk altitude is FINE (1155.45-1155.72 m ellipsoidal over the whole
+#     capture -- that is level flight at 80 m AGL, not a frozen field;
+#     /dji_osdk_ros/gps_position reports the same track 26.8 m lower, i.e.
+#     orthometric). dsm.z_datum=dem is still the safer datum because a single
+#     constant altitude carries no vertical shape;
 #   - camera: FAST-LIVO2 config camera_MARS_LVIG_AM.yaml, scale 0.25 -> the
 #     /rgb_img VIO size; images are raw (undistorted only in the math);
 #   - ortho.img_time_offset_s: VIO image time offset from the same config.
 
 bag_dir: "data/captures/geoloc_capture_01"
-geopack_dir: "data/missions/maykop-corridor-2026-08.geopack"
+# NOTE: this geopack does not exist yet -- it must be built once with network:
+#   python -m mapprep build --config configs/mapprep/amtown_armenia.yaml #       --out data/missions/amtown-armenia-2026-08.geopack
+# The old maykop-corridor-2026-08.geopack covers a different place ~430 km
+# away and must not be used with this capture.
+geopack_dir: "data/missions/amtown-armenia-2026-08.geopack"
 out_dir: "data/outputs/geoloc_capture_01_ortho"
-crs: "EPSG:32637"
+crs: "EPSG:32638"
 
 rtk:
-  swap_latlon: true
+  swap_latlon: false
+  velocity_frame: ned
+  # `orthoproto check` tolerance on the projected-position / Doppler-integral
+  # distance ratio. The capture measures 0.9995 with the fields read straight
+  # and 1.2277 with them swapped, so anything past a couple of percent is a
+  # georeference bug, not noise.
+  doppler_baseline_s: 3.0
+  doppler_ratio_tol: 0.02
 
 align: # T14/T15 step 1: camera_init -> UTM37N via RTK anchor
-  # method: "pose_graph" (global pose-graph + leveling + scale, default) or
+  # method: "pose_graph" (global pose-graph + leveling, default) or
   # "windowed" (legacy independent windowed Kabsch fits, kept for comparison).
-  # The replayed FAST-LIVO2 odometry under-measures distance by ~22%; the
-  # pose-graph estimates that scale (1.227 for this capture) which the rigid
-  # windowed fit cannot (see tools/orthoproto/README.md "Known open items").
   method: pose_graph
+  # No global scale: with the RTK fixes read correctly the FAST-LIVO2 odometry
+  # is metrically right (windowed rigid fit onto the RTK track: 0.04 m RMS over
+  # 5 s, 0.17 m over 20 s, 1.0 m over the whole 51 s capture; fitted scale
+  # 0.9990-1.0000). The 1.2261 this used to estimate was absorbing the lat/lon
+  # swap. A free scale here would hide the next georeference bug the same way.
+  estimate_scale: false
   # -- pose_graph params --
   step_s: 2.0          # inter-keyframe node spacing, seconds
   rtk_weight: 1.0      # absolute RTK-constraint weight (E/N only)
@@ -72,10 +99,11 @@ ortho: # T15
   patch_radius_m: 130.0
   ray_steps: 48
   agl_floor_m: 30.0
-  # Real flight AGL is ~80 m (AMtown.kml). The pose-graph alignment's
-  # leveling fixes the FAST-LIVO2 Z drift through the 180-degree turn, so
-  # computed AGL now stays ~63-97 m (0 frames exceed this ceiling). Keep the
-  # ceiling as a safety net against any remaining bad pose.
+  # Real flight AGL is ~80 m (AMtown.kml <mis:altitude>, relativeToGround).
+  # `camera_init` is not gravity-aligned on this rig (its z axis is ~88 deg off
+  # vertical), so the leveling step is what turns odometry z into altitude at
+  # all; after it, the track's true vertical extent over the capture is 0.63 m.
+  # Keep the ceiling as a safety net against a bad pose.
   agl_max_m: 100.0
   patch_every_n: 40
   aa_blur_passes: 2

@@ -19,6 +19,7 @@ from rosbags.rosbag2 import Reader
 from rosbags.typesys import Stores, get_typestore
 
 RTK_TOPIC = "/dji_osdk_ros/rtk_position"
+RTK_VEL_TOPIC = "/dji_osdk_ros/rtk_velocity"
 ODOM_TOPIC = "/aft_mapped_to_init"
 CLOUD_TOPIC = "/cloud_registered"
 RGB_TOPIC = "/rgb_img"
@@ -50,8 +51,14 @@ class Capture:
     # -- extraction ---------------------------------------------------------
 
     def read_rtk(self, swap_latlon: bool) -> np.ndarray:
-        """RTK fixes as (N, 4): (t_s, lat_deg, lon_deg, alt_m), fields swapped
-        if the capture recorded them in the wrong order."""
+        """RTK fixes as (N, 4): (t_s, lat_deg, lon_deg, alt_m).
+
+        `swap_latlon` exchanges the two fields, for a capture that genuinely
+        recorded them the wrong way round. It is NOT the case for
+        `geoloc_capture_01` -- its fields are correctly labelled, and swapping
+        them silently anisotropically distorts the track (see
+        `rtkcheck`). Never set it without running `orthoproto check` first.
+        """
         typestore = get_typestore(Stores.ROS2_HUMBLE)
         out = []
         with self._read() as reader:
@@ -65,6 +72,23 @@ class Capture:
                 else:
                     lat, lon = m.latitude, m.longitude
                 out.append((t, lat, lon, m.altitude))
+        return np.asarray(out, dtype=np.float64)
+
+    def read_rtk_velocity(self) -> np.ndarray:
+        """RTK Doppler velocity as (N, 4): (t_s, vx, vy, vz).
+
+        Axis meaning is receiver-dependent (NED on this DJI rig); the frame is
+        config, not an assumption baked in here -- see `rtkcheck.velocity_en`.
+        """
+        typestore = get_typestore(Stores.ROS2_HUMBLE)
+        out = []
+        with self._read() as reader:
+            for conn, _ts, raw in reader.messages():
+                if conn.topic != RTK_VEL_TOPIC:
+                    continue
+                m = typestore.deserialize_cdr(raw, conn.msgtype)
+                t = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+                out.append((t, m.vector.x, m.vector.y, m.vector.z))
         return np.asarray(out, dtype=np.float64)
 
     def read_odom(self) -> np.ndarray:

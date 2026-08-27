@@ -1,9 +1,11 @@
 """Geodetic helpers: WGS84 <-> geopack UTM CRS.
 
-Data quirk handled here on purpose (see README.md): in the DJI RTK topics of
-`geoloc_capture_01` the `latitude` and `longitude` fields are swapped, so the
-bag reader feeds `(lon, lat)` into the WGS84<->UTM transformer. The swap flag
-lives in the capture config, never implicitly in the math.
+Nothing here reinterprets a fix: whether a capture's `latitude`/`longitude`
+fields need swapping is a capture-config decision (`rtk.swap_latlon`, applied
+once in `bagio.Capture.read_rtk`), never implicit in the math. Getting that
+choice wrong is not a relabelling -- metres-per-degree differ per axis and per
+latitude, so it anisotropically distorts the whole track. `rtkcheck` exists to
+catch it; see README.md.
 """
 
 from __future__ import annotations

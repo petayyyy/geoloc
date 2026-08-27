@@ -10,13 +10,21 @@ Two alignment strategies are implemented, selected by the capture config
   physical up axis from PCA of the path, see `pca_up_axis`), which removes the
   FAST-LIVO2 Z/tilt drift through aggressive turns (the cause of the 387 m
   AGL artefacts on `geoloc_capture_01`), then jointly optimizes a slowly
-  drifting heading + translation with a global scale. The scale is a genuine,
-  measurable property of this capture: the replayed FAST-LIVO2 odometry
-  under-measures distance by ~22% (verified empirically: a per-window rigid
-  fit leaves a ~8 m residual that a similarity fit collapses to ~0.16 m on the
-  straight legs). RTK fixes enter as sparse absolute constraints with a Huber
-  robust loss (E/N only -- the RTK altitude is frozen and unreliable, see
-  README), while the odometry's own relative motion keeps the local shape.
+  drifting heading + translation. RTK fixes enter as sparse absolute
+  constraints with a Huber robust loss (E/N only), while the odometry's own
+  relative motion keeps the local shape.
+
+A global `scale` parameter exists but is **off by default**
+(`align.estimate_scale: false`). A free scale is not a modelling nicety: it
+silently absorbs georeference errors. On `geoloc_capture_01` it used to fit
+1.227 and was documented as "the odometry under-measures distance by 22%" --
+that number was the anisotropic distortion of a wrong lat/lon interpretation,
+not a property of the odometry. With the fix messages read correctly, a plain
+rigid fit of the odometry onto the RTK track leaves 0.04 m RMS over 5 s
+windows and 1.0 m over the whole 51 s capture, and the fitted scale is 1.0000.
+Only turn `estimate_scale` on for a capture whose odometry has a *known,
+physically argued* scale error, and only after `orthoproto check` passes --
+otherwise a georeference bug will hide inside it.
 
 The Z target is a constant (median RTK altitude across the segment), never a
 per-point RTK altitude; the absolute Z is corrected later by `dsm.anchor_to_dem`.
@@ -438,27 +446,33 @@ def align_pose_graph(
     smooth_weight: float = 0.5,
     rtk_huber_m: float = 2.0,
     max_iter: int = 200,
+    estimate_scale: bool = False,
 ) -> AlignmentResult:
     """Global pose-graph alignment of the whole trajectory.
 
     Level the odometry frame (fixed physical-up rotation), then jointly fit a
-    slowly drifting heading + translation and a *global scale* so the odometry
-    trajectory matches the RTK fixes in E/N. RTK fixes enter as sparse absolute
-    constraints with a Huber robust loss; the odometry's own relative motion
-    between keyframes preserves the local shape (it is exact, not a soft
-    spring -- short-baseline LIO relative motion is accurate to ~cm here).
+    slowly drifting heading + translation so the odometry trajectory matches
+    the RTK fixes in E/N. RTK fixes enter as sparse absolute constraints with a
+    Huber robust loss; the odometry's own relative motion between keyframes
+    preserves the local shape (it is exact, not a soft spring -- short-baseline
+    LIO relative motion is accurate to ~cm here).
 
     Z is never pulled from the RTK fixes: the alignment's Z target is a single
     constant (median RTK altitude), and the absolute Z is corrected later by
-    ``dsm.anchor_to_dem``. This mirrors the legacy windowed behaviour and is
-    deliberate (the RTK altitude in ``geoloc_capture_01`` is frozen/unreliable).
+    ``dsm.anchor_to_dem``.
 
     Args:
         odom: (N, 8) rows (t, x, y, z, qw, qx, qy, qz).
         rtk_utm: (M, 4) rows (t, east, north, alt) -- already lat/lon-swapped
             and UTM-projected by the caller.
         up_odom: physical up direction in the odometry frame; required for the
-            leveling step that removes FAST-LIVO2 Z/tilt drift.
+            leveling step (``camera_init`` on this rig is not gravity-aligned:
+            its z axis sits ~88 deg off vertical, so raw odometry z is mostly
+            horizontal motion, not altitude).
+        estimate_scale: fit a global scale on the odometry frame. Off by
+            default on purpose -- see the module docstring. A fitted scale
+            that is not ~1.0 is far more likely a georeference bug than a real
+            odometry property; run ``orthoproto check`` before believing it.
     """
     rtk_alt = float(np.median(rtk_utm[:, 3]))
     odom_t_min, odom_t_max = odom[0, 0], odom[-1, 0]
@@ -494,8 +508,12 @@ def align_pose_graph(
     seg = np.clip(np.searchsorted(kt, tt, side="right") - 1, 0, M - 1)
     partial = A[:, :2] - pk[seg]  # (n, 2)
 
-    # Initial guess: global similarity.
-    s0, Rg, tg = _similarity2d(A[:, :2], B)
+    # Initial guess: global similarity (rigid when the scale is held at 1).
+    if estimate_scale:
+        s0, Rg, tg = _similarity2d(A[:, :2], B)
+    else:
+        s0 = 1.0
+        Rg, tg = _rigid2d(A[:, :2], B)
     th0 = float(np.arctan2(Rg[1, 0], Rg[0, 0]))
 
     # Per-keyframe heading init (unwrapped local rigid fits) for a good start.
@@ -566,6 +584,11 @@ def align_pose_graph(
         for j in range(M - 1):
             J[2 * n + j, 3 + j] = -1.0
             J[2 * n + j, 3 + j + 1] = 1.0
+        if not estimate_scale:
+            # Zeroing the scale column (rather than re-deriving the Jacobian)
+            # leaves g[2] = 0 and H[2, 2] = 0, so the Levenberg damping term
+            # makes the solve return dx[2] = 0 exactly: the scale stays at 1.
+            J[:, 2] = 0.0
 
         e = np.concatenate([e_abs, e_smo])
         W = np.concatenate([rtk_weight * hub, np.full(M - 1, smooth_weight)])

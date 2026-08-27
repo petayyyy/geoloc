@@ -1,0 +1,80 @@
+# T05 build config: AMtown site (MARS-LVIG AMtown03 / AMtown.kml waypoints).
+#
+# Every number here is CONFIGURATION, not a code constant (P0-common.md rule 6).
+# Licensing note (ADR-008 open): Esri / Bing / Yandex imagery is used for
+# internal development only. The manifest records the terms and claims no
+# commercial-use rights until ADR-008 is closed.
+#
+# SITE PROVENANCE (established 2026-08-27, full evidence in
+# tools/orthoproto/README.md): this is NOT the Maykop corridor. The
+# AMtown03 capture was flown on 2022-07-18 over a village on the Ararat plain,
+# ARMENIA, at 39.92 N / 44.83 E -- ~430 km from Maykop and ~900 m higher.
+# Evidence: AMtown.kml read per the KML spec (lon,lat,alt); the DJI NavSatFix
+# fields as labelled; a metric self-consistency check of the RTK track against
+# its own Doppler velocity; and a direct NCC match of a raw /rgb_img frame
+# against Esri World Imagery, which lands 16 m from the RTK-predicted position.
+
+mission_id: "amtown-armenia-2026-08"
+
+crs: "EPSG:32638"            # UTM zone 38N -- lon 44.83 is zone 38, not 37
+
+# Corridor: AMtown.kml mission extent (lon 44.8230-44.8335, lat 39.9194-39.9249)
+# plus ~150 m of margin for the ortho patch radius.
+bounds:
+  west: 44.8215
+  south: 39.9180
+  east: 44.8355
+  north: 39.9265
+
+# ENU anchor (mission parameter, never a code constant)
+origin:
+  lat: 39.9222
+  lon: 44.8285
+  alt: 80.0
+
+layers:
+  # Primary: 0.3 m/px -- flight AGL is 80 m (AMtown.kml <mis:altitude>).
+  - name: ortho_a
+    provider: esri_world_imagery
+    target_gsd_m: 0.3
+    max_zoom: 19
+    min_zoom: 17
+  # Secondary: 0.5 m/px, second provider -- cross-provider matching is a hard
+  # project invariant, the query patch and the reference must never share a
+  # provider.
+  - name: ortho_b
+    provider: bing_aerial
+    target_gsd_m: 0.5
+    max_zoom: 19
+    min_zoom: 17
+
+cache:
+  root: "~/.cache/geoloc/tiles"
+
+mosaic:
+  overviews: [2, 4, 8]       # coarse level ~4 m/px for cold start / LOST search
+  jpeg_quality: 85
+  seam_px: 2
+
+# Copernicus GLO-30 DEM (T06): filler where the Livox FOV does not cover the
+# camera frame. The terrain here sits ~1050 m above the ellipsoid (the RTK
+# reports 1155.6 m at 80 m AGL); the Maykop geopack's DEM reads 143-159 m,
+# which is one of the ways the wrong-site geopack was caught.
+dem:
+  source: copernicus_glo30
+  target_gsd_m: 10
+  geoid_model: egm2008       # EGM2008 grid from the PROJ CDN, cached on disk
+  cache_dir: "~/.cache/geoloc/dem"
+  geoid_cache_dir: "~/.cache/geoloc/geoid"
+
+# OSM semantic raster (T06): reference layer for fallback channel 2 (T20) and
+# the terrain classifier that all metrics are broken down by.
+semantic:
+  source: osm
+  gsd: 1.0
+  road_half_width_m: 3.0
+  water_line_half_width_m: 2.0
+
+# Best-effort per-tile capture dates via the Esri World Imagery metadata
+# service. When unavailable the manifest records capture_date: null honestly.
+enrich_capture_dates: true
