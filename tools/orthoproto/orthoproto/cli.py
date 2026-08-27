@@ -142,6 +142,7 @@ def _cmd_dsm(cfg: dict) -> int:
         cfg["dsm"],
         out,
         Path(cfg["geopack_dir"]) / "dem.tif",
+        cfg["crs"],
     )
     print(
         f"dsm: {grid.width}x{grid.height} @ {grid.gsd} m, "
@@ -164,7 +165,7 @@ def _cmd_ortho(cfg: dict) -> int:
     R_lidar_to_cam = np.array(Rcl, dtype=np.float64).reshape(3, 3) if Rcl else None
     t0 = time.time()
     stats = run_ortho(
-        align, odom, stamps, images, cam, dsm, dem, cfg["ortho"], out, R_lidar_to_cam
+        align, odom, stamps, images, cam, dsm, dem, cfg["ortho"], out, cfg["crs"], R_lidar_to_cam
     )
     cover = [s["lidar_coverage_ratio"] for s in stats["frames"]]
     print(

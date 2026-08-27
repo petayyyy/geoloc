@@ -8,6 +8,8 @@ from orthoproto.camera import Pinhole
 from orthoproto.dsm import NODATA, DsmGrid
 from orthoproto.ortho import DemField, run_ortho, terrain_height, warp_frame
 
+EPSG = "EPSG:32638"
+
 CFG = {
     "patch_gsd_m": 0.5,
     "patch_radius_m": 55.0,
@@ -194,7 +196,7 @@ def test_run_ortho_skips_frames_above_agl_max(tmp_path):
     )
     cfg = {**CFG, "agl_max_m": 500.0, "aa_blur_passes": 0, "img_time_offset_s": 0.0}
 
-    stats = run_ortho(align, odom, img_stamps, images, cam, dsm, dem, cfg, tmp_path)
+    stats = run_ortho(align, odom, img_stamps, images, cam, dsm, dem, cfg, tmp_path, EPSG)
 
     frames = stats["frames"]
     assert frames[0].get("skipped", False) is False
@@ -255,10 +257,11 @@ def test_run_ortho_applies_lidar_to_camera_extrinsic(tmp_path):
     cfg = {**CFG, "aa_blur_passes": 0, "img_time_offset_s": 0.0}
 
     stats_with = run_ortho(
-        align, odom, img_stamps, images, cam, dsm, dem, cfg, tmp_path / "with", R_lidar_to_cam
+        align, odom, img_stamps, images, cam, dsm, dem, cfg, tmp_path / "with", EPSG,
+        R_lidar_to_cam,
     )
     stats_without = run_ortho(
-        align, odom, img_stamps, images, cam, dsm, dem, cfg, tmp_path / "without", None
+        align, odom, img_stamps, images, cam, dsm, dem, cfg, tmp_path / "without", EPSG, None
     )
 
     assert stats_with["frames"][0]["lidar_coverage_ratio"] > 0.3
@@ -282,3 +285,43 @@ def test_camera_at_patch_centre_projection_symmetry():
     n = len(res["east"])
     centre = res["confidence"][n // 2 - 4 : n // 2 + 5, n // 2 - 4 : n // 2 + 5]
     assert centre.mean() > 200.0
+
+
+def test_written_rasters_carry_the_configured_crs(tmp_path):
+    """Regression 2026-08-27: the mission CRS was hardcoded "EPSG:32637".
+
+    A parameter living in code, against the project's own rule. It went
+    unnoticed while the capture config also said 32637; once the capture's
+    real site turned out to be UTM 38N, every patch, mosaic and DSM the
+    pipeline wrote carried coordinates in zone 38 under a zone-37 label -- a
+    consumer trusting the file's own CRS tag would place them ~430 km away.
+    """
+    import rasterio
+
+    cam = Pinhole(fx=FX, fy=FY, cx=CX, cy=CY)
+    dsm = _flat_world(0.5, 90.0)
+    dem = _flat_dem()
+    series = TransformSeries(
+        times=np.array([0.0, 10.0]),
+        rotations=np.stack([np.eye(3), np.eye(3)]),
+        translations=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+    )
+    align = AlignmentResult(
+        series=series,
+        residuals=np.array([0.0]),
+        residuals_max=np.array([0.0]),
+        window_n=np.array([10]),
+        rtk_alt_used=0.0,
+        z_datum="rtk",
+    )
+    odom = np.array([[0.0, 0.0, 0.0, 100.0, 1.0, 0.0, 0.0, 0.0]])
+    img_stamps = np.array([0.0])
+    images = np.stack([_render_image(cam, np.array([0.0, 0.0, 100.0]), 100.0)]).astype(np.uint8)
+    cfg = {**CFG, "aa_blur_passes": 0, "img_time_offset_s": 0.0, "patch_every_n": 1}
+    run_ortho(align, odom, img_stamps, images, cam, dsm, dem, cfg, tmp_path, "EPSG:32638")
+
+    written = [tmp_path / "ortho_mosaic.tif", *sorted((tmp_path / "patches").glob("*.tif"))]
+    assert len(written) > 1, "expected a mosaic and at least one patch"
+    for path in written:
+        with rasterio.open(path) as ds:
+            assert ds.crs.to_string() == "EPSG:32638", f"{path.name} carries {ds.crs}"

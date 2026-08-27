@@ -40,7 +40,13 @@ class DsmGrid:
             self.north_max - (row + 0.5) * self.gsd,
         )
 
-    def save(self, path: Path, z_path: Path, conf_path: Path) -> None:
+    def save(self, path: Path, z_path: Path, conf_path: Path, crs: str) -> None:
+        """Write the DSM rasters. `crs` is the mission CRS from the capture config.
+
+        It used to be a hardcoded "EPSG:32637" -- a parameter living in code,
+        against the project's own rule, which silently mislabelled every
+        raster once the capture moved to UTM 38N.
+        """
         transform = rasterio.transform.from_origin(
             self.east_min, self.north_max, self.gsd, self.gsd
         )
@@ -50,7 +56,7 @@ class DsmGrid:
             width=self.width,
             count=1,
             dtype="float32",
-            crs="EPSG:32637",
+            crs=crs,
             transform=transform,
             nodata=NODATA,
         )
@@ -267,6 +273,7 @@ def run_dsm(
     cfg: dict,
     out_dir: Path,
     dem_tif: Path,
+    crs: str,
 ) -> tuple[DsmGrid, AlignmentResult]:
     dsm = build_dsm(align.series, odom, clouds, cfg)
     z_datum = cfg.get("z_datum", "dem")
@@ -279,7 +286,7 @@ def run_dsm(
     align.z_datum = z_datum
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    dsm.save(out_dir / "dsm.yaml", out_dir / "dsm.tif", out_dir / "dsm_confidence.tif")
+    dsm.save(out_dir / "dsm.yaml", out_dir / "dsm.tif", out_dir / "dsm_confidence.tif", crs)
     dsm.preview_png(out_dir / "dsm_preview.png")
     align.save(out_dir / "align_final.yaml")
     return dsm, align

@@ -56,7 +56,10 @@ class DemField:
         # height with a nodata sentinel (e.g. -9999) produces some other
         # finite-looking number, not the sentinel itself.
         any_nodata = (
-            (z00 == self.nodata) | (z10 == self.nodata) | (z01 == self.nodata) | (z11 == self.nodata)
+            (z00 == self.nodata)
+            | (z10 == self.nodata)
+            | (z01 == self.nodata)
+            | (z11 == self.nodata)
         )
         vals = (z00 * (1 - fc) + z10 * fc) * (1 - fr) + (z01 * (1 - fc) + z11 * fc) * fr
         vals[any_nodata | ~valid] = np.nan
@@ -235,6 +238,7 @@ def run_ortho(
     dem: DemField,
     cfg: dict,
     out_dir: Path,
+    crs: str,
     R_lidar_to_cam: np.ndarray | None = None,
 ) -> dict:
     """R_lidar_to_cam ("Rcl" in the FAST-LIVO2 extrinsic_calib config): the
@@ -322,7 +326,7 @@ def run_ortho(
         wgt[r0 : r0 + ph, c0 : c0 + pw] += w
 
         if idx % patch_every == 0 or idx == n_frames - 1:
-            _save_patch(out_dir, idx, res)
+            _save_patch(out_dir, idx, res, crs)
 
         stats.append(
             {
@@ -335,7 +339,7 @@ def run_ortho(
     if agl_max_m is not None:
         print(f"ortho: skipped {n_skipped}/{n_frames} frames with agl > {agl_max_m} m")
 
-    _save_mosaic(out_dir, acc, wgt, e_min, n_max, gsd, stats)
+    _save_mosaic(out_dir, acc, wgt, e_min, n_max, gsd, stats, crs)
     return {"frames": stats}
 
 
@@ -347,6 +351,7 @@ def _save_mosaic(
     north_max: float,
     gsd: float,
     stats: list,
+    crs: str,
 ) -> None:
     rgb = np.where(wgt[..., None] > 0, acc / np.maximum(wgt[..., None], 1e-12), 0.0)
     conf = np.where(wgt > 0, np.sqrt(np.minimum(wgt / max(1, len(stats)), 1.0)) * 255.0, 0.0)
@@ -358,7 +363,7 @@ def _save_mosaic(
         width=w,
         count=3,
         dtype="uint8",
-        crs="EPSG:32637",
+        crs=crs,
         transform=transform,
     )
     rgb8 = np.clip(rgb, 0, 255).astype(np.uint8)
@@ -385,7 +390,7 @@ def _quat_matrix(q: np.ndarray) -> np.ndarray:
     )
 
 
-def _save_patch(out_dir: Path, idx: int, res: dict) -> None:
+def _save_patch(out_dir: Path, idx: int, res: dict, crs: str) -> None:
     gsd = res["gsd"]
     transform = rasterio.transform.from_origin(res["east_min"], res["north_max"], gsd, gsd)
     h, w = res["rgb"].shape[:2]
@@ -395,7 +400,7 @@ def _save_patch(out_dir: Path, idx: int, res: dict) -> None:
         width=w,
         count=3,
         dtype="uint8",
-        crs="EPSG:32637",
+        crs=crs,
         transform=transform,
     )
     with rasterio.open(out_dir / "patches" / f"patch_{idx:04d}.tif", "w", **profile) as dst:
