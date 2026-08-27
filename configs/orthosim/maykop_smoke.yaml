@@ -1,0 +1,20 @@
+# OrthoSim smoke against the real Maykop geopack (Esri ortho_a <-> Bing ortho_b).
+# Cross-provider: query rendered from Bing (b), map window from Esri (a).
+
+seed: 7
+set: smoke
+n_pairs: 20
+scene:
+  source: geopack
+  geopack_dir: "data/missions/maykop-corridor-2026-08.geopack"
+  terrain: dem
+patch:
+  gsd_m: 0.5
+  patch_size: 128
+  window_size: 256
+  aa: 2
+providers:
+  query: b
+  map: a
+query_mode: direct
+failures_n: 20

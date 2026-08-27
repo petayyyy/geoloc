@@ -1,0 +1,21 @@
+# OrthoSim smoke set -- runs on synthetic scenes, no geopack / network needed.
+# Cross-provider rule: query is rendered from provider "b", the map window from
+# provider "a" (never the same source).
+
+seed: 42
+set: smoke
+n_pairs: 20
+scene:
+  source: synthetic
+  kind: periodic
+  terrain: flat
+patch:
+  gsd_m: 0.5
+  patch_size: 128
+  window_size: 256
+  aa: 2
+providers:
+  query: b
+  map: a
+query_mode: direct
+failures_n: 20

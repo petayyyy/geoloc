@@ -1,0 +1,20 @@
+# OrthoSim adversarial set -- measures how often the matcher is *confidently
+# wrong* (periodic grids, featureless water/snow, stale maps, symmetric
+# interchanges), not accuracy. See docs/plan/testing/02-level-a-orthosim.md.
+
+seed: 42
+set: adversarial
+n_per_kind: 200
+scene:
+  source: synthetic
+  terrain: flat
+patch:
+  gsd_m: 0.5
+  patch_size: 128
+  window_size: 256
+  aa: 2
+providers:
+  query: b
+  map: a
+query_mode: direct
+failures_n: 50
